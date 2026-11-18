@@ -1,0 +1,609 @@
+<!-- markdownlint-disable MD041 -->
+<p align="center">
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="https://cdn.adguardcdn.com/website/github.com/TrustTunnel/logo_dark.svg" width="300px" alt="TrustTunnel" />
+<img src="https://cdn.adguardcdn.com/website/github.com/TrustTunnel/logo_light.svg" width="300px" alt="TrustTunnel" />
+</picture>
+</p>
+
+<p align="center"><a href="#clients">Clients</a>
+  · <a href="https://agrd.io/ios_trusttunnel">App Store (iOS)</a>
+  · <a href="https://agrd.io/macos_trusttunnel">App Store (macOS)</a>
+  · <a href="https://agrd.io/android_trusttunnel">Play store</a>
+</p>
+
+---
+
+## CatTunnel server
+
+This repository is the server (endpoint) used by [CatTunnel](https://github.com/Cattunnel/cattunnel). It is a fork of [TrustTunnel](https://github.com/TrustTunnel/TrustTunnel) by AdGuard, based on 1.3.0-beta.2, under the same Apache License 2.0 (see [LICENSE](LICENSE)). This tree is `1.3.0-beta.2-32-ga12e73a`.
+
+Changes on top of upstream:
+
+- **NineLives transport (XHTTP protocol 1).** A second transport next to CONNECT: paired HTTP POST/GET requests with a signed handshake, optional body encryption, session resume and a global memory budget. It is off unless `xhttp_enable = true`. Wire format: [docs/xhttp-protocol.md](docs/xhttp-protocol.md); settings: section "XHTTP protocol 1 and memory" below.
+- **Decoy site (reverse proxy).** HTTP/1.1 keep-alive, chunked bodies and trailers are passed through correctly, chunk size lines and trailers are limited, and HTTP/2 is allowed on reverse proxy hosts.
+- **CONNECT.** The `200` answer carries plausible headers.
+- **TLS listener.** A ClientHello split across TLS records is joined; non-TLS input is rejected at once.
+- **Metrics.** JA4 fingerprints of clients are counted.
+
+The rest of this README is the upstream documentation. The client apps it links to are AdGuard's TrustTunnel apps, not CatTunnel.
+
+---
+
+## Table of Contents
+
+- [Introduction](#introduction)
+- [Server Features](#server-features)
+- [Client Features](#client-features)
+- [Quick start](#quick-start)
+    - [Endpoint setup](#endpoint-setup)
+        - [Install the endpoint](#install-the-endpoint)
+        - [Updating the endpoint](#updating-the-endpoint)
+        - [Endpoint configuration wizard](#endpoint-configuration-wizard)
+        - [Let's Encrypt certificate lifecycle](#lets-encrypt-certificate-lifecycle)
+        - [Running endpoint](#running-endpoint)
+        - [Export client configuration](#export-client-configuration)
+    - [Client setup](#client-setup)
+        - [Install the client](#install-the-client)
+        - [Updating the client](#updating-the-client)
+        - [Client configuration wizard](#client-configuration-wizard)
+        - [Running client](#running-client)
+- [Clients](#clients)
+- [See also](#see-also)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+---
+
+## Introduction
+
+TrustTunnel is a modern, open-source VPN protocol originally developed by
+[AdGuard VPN][adguard-vpn] and now available for anyone to use and audit.
+
+It delivers fast, secure, and reliable VPN connections without the usual trade-offs.
+By design, TrustTunnel traffic is indistinguishable from regular HTTPS traffic,
+allowing it to bypass throttling and deep-packet inspection while maintaining
+strong privacy protections.
+
+The TrustTunnel project includes the VPN endpoint (this repository), the
+[library and CLI for the client][trusttunnel-client],
+and the [GUI application][trusttunnel-flutter-client].
+
+[adguard-vpn]: https://adguard-vpn.com
+[trusttunnel-client]: https://github.com/TrustTunnel/TrustTunnelClient
+[trusttunnel-flutter-client]: https://github.com/TrustTunnel/TrustTunnelFlutterClient
+[app-store]: https://agrd.io/ios_trusttunnel
+[play-store]: https://agrd.io/android_trusttunnel
+
+## Server Features
+
+- **VPN Protocol**: The library implements the VPN protocol compatible
+  with HTTP/1.1, HTTP/2, and QUIC. By mimicking regular network traffic, it
+  becomes impossible to detect and block.
+
+- **Flexible Traffic Tunneling**: TrustTunnel can tunnel TCP, UDP, and ICMP
+  traffic to and from the client.
+
+- **Platform Compatibility**: The server is compatible with Linux and macOS.
+  The client is available for Android, Apple, Windows, and Linux.
+
+- **Subscription Endpoint**: Optionally serve a per-user subscription URL over
+  HTTPS. When `[subscription]` is enabled in `vpn.toml`, each client can fetch
+  its own JSON configuration (connection parameters, credentials, DNS upstreams,
+  and more) over HTTPS using HTTP Basic Auth, enabling self-service and
+  auto-refreshing client configuration without manual file redistribution.
+
+---
+
+## Client Features
+
+- **Traffic Tunneling**: The library is capable of tunneling TCP, UDP, and ICMP
+  traffic from the client to the endpoint and back.
+
+- **Cross-Platform Support**: It supports Linux, macOS, and Windows platforms,
+  providing a consistent experience across different operating systems.
+
+- **System-Wide Tunnel and SOCKS5 Proxy**: It can be set up as a system-wide
+  tunnel, utilizing a virtual network interface, as well as a SOCKS5 proxy.
+
+- **Split Tunneling**: The library supports split tunneling, allowing users to
+  exclude connections to certain domains or hosts from routing through the VPN
+  endpoint, or vice versa, only routing connections to specific domains or hosts
+  through the endpoint based on an exclusion list.
+
+- **Custom DNS Upstream**: Users can specify a custom DNS upstream, which is
+  used for DNS queries routed through the VPN endpoint.
+
+---
+
+## Quick start
+
+### Endpoint setup
+
+#### Install the endpoint
+
+An installation script is available that can be run with the following command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrustTunnel/TrustTunnel/refs/heads/master/scripts/install.sh | sh -s -
+```
+
+The installation script will download the prebuilt package from the latest
+GitHub release for the appropriate system architecture and unpack it to
+`/opt/trusttunnel`. The output directory could be overridden by specifying
+`-o DIR` flag at the end of the command above.
+
+If you want to install a specific version (instead of the latest), use `-V <version>`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrustTunnel/TrustTunnel/refs/heads/master/scripts/install.sh | sh -s - -V <version>
+```
+
+> [!NOTE]
+> Prebuilt packages are available for `linux-x86_64`, `linux-aarch64`, and
+> `macos-universal` (Intel and Apple Silicon) architectures.
+
+#### Updating the endpoint
+
+The installation script always installs the latest available version.
+So, to update your installation, run the install command again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrustTunnel/TrustTunnel/refs/heads/master/scripts/install.sh | sh -s -
+```
+
+This re-runs the installer and replaces the binaries in the installation
+directory (`/opt/trusttunnel` by default, or the directory you specified with `-o DIR`).
+
+> [!NOTE]
+> Don't forget to stop the endpoint before updating:
+>
+> ```bash
+> sudo systemctl stop trusttunnel
+> ```
+>
+> To start the endpoint again after updating:
+>
+> ```bash
+> sudo systemctl start trusttunnel
+> ```
+
+#### Endpoint configuration wizard
+
+Please refer to the [CONFIGURATION.md](CONFIGURATION.md) for the more detailed
+documentation on how to configure the endpoint.
+
+The installation directory contains `setup_wizard` binary that helps generate
+the config files required for the endpoint to run:
+
+```bash
+cd /opt/trusttunnel/
+./setup_wizard -h
+```
+
+The setup wizard supports interactive mode, so you could run it and it will ask
+for data required for endpoint configuration.
+
+```bash
+cd /opt/trusttunnel/
+sudo ./setup_wizard
+```
+
+> [!NOTE]
+> `sudo` is required to manage TLS certificates properly.
+
+The wizard will ask for the following fields, some of them have the default
+values you could safely use:
+
+- **The address to listen on** - specify the address for the endpoint to listen
+  on. Use `0.0.0.0:443` for native deployments (HTTPS on all interfaces).
+  If you run with Docker port mapping `443:8443`, set it to `0.0.0.0:8443`.
+- **Path to credentials file** - path where the user credentials for
+  authorization will be stored.
+- **Username** - the username the user will use for authorization.
+- **Password** - the user's password.
+- **Add one more user?** - select `yes` if you want to add more users, or `no`
+  to continue the configuration process.
+- **Path to the rules file** - path to store the filtering rules.
+- **Connection filtering rules** - you can add rules that the endpoint will use
+  to allow or disallow user's connections based on:
+    - Client IP address
+    - TLS random prefix
+    - TLS random with mask
+
+  Press `n` to allow all connections.
+- **Path to a file to store the library settings** - path to store the main
+  endpoint configuration file.
+- **Certificate selection** - choose how to obtain a TLS certificate:
+    - **Issue a Let's Encrypt certificate** (requires a public domain) - the
+      setup wizard has built-in ACME support and can automatically obtain a free,
+      publicly trusted certificate from Let's Encrypt. You'll need:
+        - A registered domain pointing to your server's IP address
+        - Port 80 accessible from the internet (for HTTP-01 challenge), or
+        - Ability to add DNS TXT records (for DNS-01 challenge)
+    - **Generate a self-signed certificate** - supported by both the CLI client
+      and the Flutter client. The generated certificate is automatically embedded
+      into the exported client configuration.
+    - **Provide path to existing certificate** - use your own certificate files
+      obtained from another CA or tool like [certbot][certbot].
+- **Path to a file to store the TLS hosts settings** - path to store the TLS host settings file.
+
+At this point all required configuration files are created and saved on disk.
+
+[certbot]: https://eff-certbot.readthedocs.io/en/stable/
+
+#### Let's Encrypt certificate lifecycle
+
+The setup wizard can obtain a Let's Encrypt certificate during initial setup, but you are responsible for ensuring it stays valid over time (renewal and service reload/restart).
+
+If you're using Certbot to manage certificates and renew them automatically, follow the guide in [CERT_RENEWAL.md](CERT_RENEWAL.md).
+
+#### Running endpoint
+
+The installed package contains the systemd service template, named
+`trusttunnel.service.template`.
+
+This template can be used to set up the endpoint as a systemd service:
+
+> [!NOTE]
+> The template file assumes that the TrustTunnel Endpoint binary and all its
+> configuration files are located in `/opt/trusttunnel` and have the default
+> file names. Modify the template if you have used the different paths.
+
+```bash
+cd /opt/trusttunnel/
+cp trusttunnel.service.template /etc/systemd/system/trusttunnel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now trusttunnel
+```
+
+#### Export client configuration
+
+The endpoint binary can generate client configurations in two formats:
+
+##### Deep-Link Format (Default)
+
+Generate a compact `tt://?` URI suitable for QR codes and mobile apps:
+
+```shell
+# <client_name> - name of the client those credentials will be included in the configuration
+# <address> - `ip`, `ip:port`, `domain`, or `domain:port` that the client will use to connect
+#           If only `ip` or `domain` is specified, the port from the `listen_address` field will be used
+cd /opt/trusttunnel/
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address>
+
+# Or explicitly specify the format:
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address> --format deeplink
+```
+
+This outputs a `tt://?` deep-link URI that can be:
+
+- Shared directly with mobile clients
+- Used with the [CLI client][trusttunnel-client] or [TrustTunnel Flutter Client][trusttunnel-flutter-client]
+
+You can also provide additional options:
+
+- `--name <display_name>`: Set a custom display name for the server in the client app.
+- `--dns-upstream <dns_upstream>`: Specify a DNS upstream for the client. Can be an IP address
+  or a secure DNS URI (e.g., `tls://1.1.1.1`, `https://dns.google/dns-query`).
+  This flag can be used multiple times to provide a list of DNS upstreams.
+
+Example with custom name and DNS upstreams:
+
+```shell
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address> \
+    --name "My Secure VPN" \
+    --dns-upstream 1.1.1.1 --dns-upstream tls://8.8.8.8
+```
+
+When `--generate-client-random-prefix` is used, the endpoint also appends an
+allow rule for the generated value to the `rules.toml` file referenced from
+`vpn.toml`.
+
+**Note**: If your certificate is signed by a trusted CA (e.g., Let's Encrypt), it will be
+automatically omitted from the deep-link to keep it compact. Self-signed
+certificates are included automatically.
+
+##### TOML Format (For CLI Client)
+
+Generate a traditional TOML configuration file:
+
+```shell
+cd /opt/trusttunnel/
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <public_ip> --format toml
+```
+
+This outputs a TOML configuration file suitable for the CLI client.
+
+##### Subscription URL
+
+The endpoint can serve a per-user subscription URL over HTTPS. When the
+`[subscription]` section is enabled in `vpn.toml`, each client can fetch its own
+JSON configuration — connection parameters, credentials, DNS upstreams, custom
+SNI, and client random prefix — over HTTPS using HTTP Basic Auth against
+`credentials.toml`. This lets a client provision and refresh its configuration
+directly from the endpoint from a single URL, without manual file
+redistribution.
+
+When `[subscription]` is enabled, the client config export (both
+`--format toml` and `--format deeplink`) additionally includes a
+`subscription_url` field of the form:
+
+```text
+https://<username>:<password>@<host><path>
+```
+
+The embedded credentials belong to the client named by `-c <client_name>` (read
+from `credentials.toml`); the host and path come from the `hostname` and `path`
+keys of the `[subscription]` section (`/subscription` by default). Characters
+outside the RFC 3986 unreserved set are percent-encoded, so the URL stays valid
+even when a username or password contains `:`, `@`, `/`, or other reserved
+characters.
+
+To override the base URL — for example, when the endpoint is reachable through a
+reverse proxy or a different public hostname — pass
+`--subscription-url <base_url>`:
+
+```shell
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address> \
+    --format toml --subscription-url https://sub.example.org/my-sub
+```
+
+Only the base URL (scheme, host, and path) is overridden; the credentials are
+always embedded from `credentials.toml`.
+
+With `--format deeplink` (the default), the subscription URL is embedded in
+the deep link (deep-link format version 2). Clients that support it keep
+their configuration current by fetching the URL.
+
+To export a minimal link that contains only the subscription URL (no static
+connection parameters), pass `--subscription-only`:
+
+```shell
+./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address> \
+    --format deeplink --subscription-only
+```
+
+Clients importing a subscription-only link must fetch the subscription before
+they can connect. Because such link carries no embedded certificate, the
+export fails unless the certificate of the subscription host is verifiable by
+system CAs (the check is skipped when `--subscription-url` overrides the URL).
+Note that a deep link carrying a subscription URL embeds
+HTTP Basic Auth credentials; treat such links as secrets.
+
+The `[subscription]` section is hot-reloaded on `SIGHUP`; if the reloaded
+section fails to parse or validate, the previous configuration is kept. See
+[CONFIGURATION.md](CONFIGURATION.md#subscription-settings) for the full
+reference.
+
+Both formats contain all necessary information to connect to the endpoint. See the
+[TrustTunnel Flutter Client documentation][trusttunnel-flutter-configuration] for setup instructions.
+
+Congratulations! You've done setting up the endpoint!
+
+[trusttunnel-flutter-configuration]: https://github.com/TrustTunnel/TrustTunnelFlutterClient/blob/master/README.md#server-configuration
+
+### Client setup
+
+Multiple clients are available for connecting to the endpoint — see the
+[Clients](#clients) section for the full list. The instructions below cover
+the official **[CLI client][trusttunnel-client]** setup.
+
+#### Install the client
+
+##### Linux / macOS
+
+An installation script is available:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrustTunnel/TrustTunnelClient/refs/heads/master/scripts/install.sh | sh -s -
+```
+
+The installation script will download the prebuilt package from the latest GitHub release for the appropriate system architecture and unpack it to `/opt/trusttunnel_client`. The output directory could be overridden by specifying `-o DIR` flag at the end of the command above.
+
+> [!NOTE]
+> Install script supports x86_64, aarch64, armv7, mips and mipsel architectures
+> for linux and arm64 and x86_64 for macos.
+
+##### Windows
+
+Download the latest release archive from the
+[TrustTunnel Client releases page][trusttunnel-client-releases].
+
+Extract the archive to a directory of your choice, for example `C:\TrustTunnel\`.
+
+[trusttunnel-client-releases]: https://github.com/TrustTunnel/TrustTunnelClient/releases/latest
+
+##### Router setup
+
+For router deployments, please refer to router-specific client installation
+guides.
+
+- Keenetic routers: [TrustTunnel-Keenetic](https://github.com/artemevsevev/TrustTunnel-Keenetic)
+  (guide in Russian)
+
+#### Updating the client
+
+##### Linux / macOS
+
+The installation script always installs the latest available version.
+So, to update your installation, run the install command again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TrustTunnel/TrustTunnelClient/refs/heads/master/scripts/install.sh | sh -s -
+```
+
+This re-runs the installer and replaces the binaries in the installation directory (`/opt/trusttunnel_client` by default, or the directory you specified with `-o DIR`).
+
+> [!NOTE]
+> Don't forget to stop the client before updating (for example, by stopping the running process).
+
+##### Windows
+
+Download the latest release from the
+[releases page][trusttunnel-client-releases] and replace the files
+in your installation directory.
+
+#### Client configuration wizard
+
+The installation directory contains `setup_wizard` binary that helps generate
+the config files required for the client to run.
+
+##### Linux / macOS
+
+```bash
+cd /opt/trusttunnel_client/
+./setup_wizard -h
+```
+
+To configure the client to use the config that was generated by endpoint, run
+the following command:
+
+```bash
+./setup_wizard --mode non-interactive \
+     --endpoint_config <endpoint_config> \
+     --settings trusttunnel_client.toml
+```
+
+##### Windows
+
+```cmd
+setup_wizard.exe --mode non-interactive ^
+    --endpoint_config <endpoint_config> ^
+    --settings trusttunnel_client.toml
+```
+
+In both cases, `<endpoint_config>` is the path to the configuration file
+generated by the endpoint.
+
+`trusttunnel_client.toml` will contain all required configuration for the
+client.
+
+> [!TIP]
+> The generated configuration contains basic settings to connect to the endpoint.
+> For advanced features, edit `trusttunnel_client.toml` directly. You can configure:
+>
+> - **VPN mode**: Route all traffic (`general`) or only specific destinations (`selective`)
+> - **Kill switch**: Block traffic when VPN disconnects
+> - **DNS upstreams**: Custom DNS resolvers (DoH, DoT, DoQ supported)
+> - **Exclusions**: Domains/IPs to bypass or route through VPN
+> - **Listener type**: TUN device or SOCKS5 proxy
+>
+> See the [TrustTunnel CLI Client README](https://github.com/TrustTunnel/TrustTunnelClient/blob/master/trusttunnel/README.md#configuration-reference) for all available options.
+
+<!-- markdownlint-disable MD028 -->
+> [!NOTE]
+> After editing the config, restart the client for the changes to take effect.
+
+#### Running client
+
+##### Linux / macOS
+
+```bash
+cd /opt/trusttunnel_client/
+sudo ./trusttunnel_client -c trusttunnel_client.toml
+```
+
+`sudo` is required to set up the routes and tun interface.
+
+##### Windows
+
+Open a terminal **as Administrator** and run:
+
+```cmd
+trusttunnel_client.exe -c trusttunnel_client.toml
+```
+
+Administrator privileges are required to set up routes and the TUN interface.
+
+## Clients
+
+### Official
+
+#### CLI
+
+[TrustTunnel Client][trusttunnel-client] — Linux, macOS, Windows
+
+#### GUI
+
+[TrustTunnel Flutter Client][trusttunnel-flutter-client] —
+iOS, Android (macOS, Windows — coming soon).
+Available on [App Store][app-store]* and [Play Store][play-store].
+
+> [!NOTE]
+> \* In some countries, the iOS app is not available in the App Store. You may need an Apple ID from another country to download it. [Learn how to change your App Store country](https://change-appstore-country.com/).
+
+### Community
+
+> [!NOTE]
+> Community clients are developed and maintained independently.
+> They are not officially supported by the TrustTunnel team.
+
+#### GUI
+
+[Trusty](https://github.com/Meddelin/trusty) - A cross-platform GUI client built with Flutter (Windows stable, macOS alpha). Features include real-time logs, 1-click SSH server deployment, and split-tunneling domain groups auto-discovery.
+
+[TrustTunnel-GUI-Client](https://github.com/blazuryk/TrustTunnel-GUI-Client) — Windows GUI client, implemented as a Python wrapper for [TrustTunnel Client][trusttunnel-client]
+
+[Surge](https://nssurge.com) — macOS and iOS network toolbox with experimental TrustTunnel support. (Commercial)
+
+[FireTunnel](https://github.com/pnsrc/firetunnel) - A cross-platform client written in QT used modified [TrustTunnel Client](https://github.com/pnsrc/TrustTunnelClient/)
+
+[FreeTunnel](https://github.com/dimmmmmmmer/freetunnel) — A free, open-source desktop client for Windows, macOS, and Linux with a native Qt 6 interface, built on the official [TrustTunnel Client][trusttunnel-client]. One-click connect, split tunneling, kill switch, system tray, and signed auto-updates.
+
+[Shadowrocket](https://shadowlaunch.com) — Rule based proxy utility client for iPhone/iPad with TrustTunnel support. (Commercial)
+
+## See Also
+
+- [CONFIGURATION.md](CONFIGURATION.md) - Configuration documentation
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Development documentation
+- [PROTOCOL.md](PROTOCOL.md) - Protocol specification
+- [CHANGELOG.md](CHANGELOG.md) - Changelog
+- [VERIFY_RELEASES.md](VERIFY_RELEASES.md) - How to verify releases
+
+## Roadmap
+
+While our VPN currently supports tunneling TCP/UDP/ICMP traffic, we plan to add support for
+peer-to-peer communication between clients.
+
+Stay tuned for this feature in upcoming releases.
+
+## License
+
+This project is licensed under the Apache 2.0 License. See [LICENSE](LICENSE) for details.
+
+## XHTTP protocol 1 and memory
+
+XHTTP remains disabled unless `xhttp_enable = true`. The endpoint accepts only protocol 1:
+both requests require `x-xhttp-version: 1`, and successful responses confirm version 1.
+`xhttp_supported_versions = [1]` and `transport_mode = "xhttp"` are the only supported XHTTP
+version table and listener mode. Versions 2/3, suite 2, nonzero capabilities, `xhttp-cdn`
+and `sudoku` are reserved and rejected. Legacy negotiation and fallback are removed.
+Every TCP session receives a resume token; resumes require a fresh challenge-bound HMAC proof.
+Encrypted resumes always perform a fresh signed key exchange, and FIN requires its explicit ACK.
+The canonical [protocol specification](docs/xhttp-protocol.md) defines the wire formats and extension rules.
+
+`xhttp_memory_limit` bounds XHTTP-owned buffers globally. The default is one quarter of the smaller
+physical/cgroup memory limit, clamped to 64..512 MiB (64 MiB when memory discovery is unavailable).
+A machine limited to 2 GiB therefore defaults to 512 MiB. New sessions receive a 256 KiB base reservation;
+if that would exceed the budget, the request receives HTTP 503 without evicting established sessions.
+
+The base covers session/control state, two small reader allowances, a 64 KiB peer read (including a
+chunk saved across cancellation), and bounded frame/encryption scratch space. Decoder reservations grow
+before copying input: eight times the observed buffered capacity/input requirement, rounded up to a
+power of two above the reader allowance. This covers geometric growth, extracted records and plaintext,
+and stays charged while a returned frame owns the memory. Empty decoders release their burst reservation.
+Replay data is stored in shared blocks, charged by payload bytes plus 512 bytes of container/owner overhead
+per block. ACK frees complete blocks; resume clones retain the same reservation until the last owner drops.
+Replay frames keep their previous 32 KiB logical boundaries across stored blocks.
+
+A downlink waits for budget with cancellation, retaining its already-read peer chunk for resume.
+An uplink which cannot reserve decoder growth closes its transport without acknowledging unaccepted data;
+the session can resume when space is available. The budget does not include TLS/HTTP transport buffers,
+allocator RSS overhead or kernel sockets. Metrics expose `xhttp_reserved_bytes` and
+`xhttp_memory_rejections_total` (failed session or buffer reservations).
+
+`xhttp_resume_timeout = 0` continues to disable resumption. Body encryption remains optional for direct connections;
+Future protocol 2 reserves improved native encryption and CDN; protocol 3 reserves Sudoku.
+X5/N7 and link integration are still pending. Interoperability and D2/D3 traffic-shape validation
+are required before release.

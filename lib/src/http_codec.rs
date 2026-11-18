@@ -1,0 +1,257 @@
+use crate::tls_demultiplexer::Protocol;
+use crate::{authentication, datagram_pipe, log_utils, net_utils, pipe};
+use async_trait::async_trait;
+use bytes::Bytes;
+use http::uri::Authority;
+use http::{Response, StatusCode};
+use rand::Rng;
+use std::io;
+use std::net::IpAddr;
+
+pub(crate) type RequestHeaders = http::request::Parts;
+pub(crate) type ResponseHeaders = http::response::Parts;
+
+/// The value of the `server` header in the response to a CONNECT request.
+///
+/// The headers travel inside TLS, so the censor sees only their size and not
+/// the values. A value of our own would be a worse mark than a common one if
+/// the contents ever became readable, so the common one is used.
+const CONNECT_RESPONSE_SERVER: &str = "nginx";
+
+/// The bounds of the length of a random value in the response.
+const CONNECT_RESPONSE_ID_MIN: usize = 8;
+const CONNECT_RESPONSE_ID_MAX: usize = 40;
+
+/// Build the headers of the response to a CONNECT request.
+///
+/// A web server answers with a set of headers, and the size of the answer
+/// differs from request to request. An empty answer of the same size every
+/// time is a mark of a tunnel, so the response carries the headers a server
+/// would send.
+///
+/// The random values have a random length as well: with a fixed length every
+/// answer would be the same size again, just a different constant.
+///
+/// RFC 9110, 9.3.6: a 2xx response to CONNECT carries neither content-length
+/// nor transfer-encoding. A client counts the data of the tunnel against
+/// content-length and would break the stream.
+pub(crate) fn connect_response_headers() -> ResponseHeaders {
+    let now = chrono::Utc::now();
+    let mut rng = rand::thread_rng();
+    let request_id = random_hex(&mut rng);
+    let trace_id = random_hex(&mut rng);
+
+    http::Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            http::header::DATE,
+            now.format("%a, %d %b %Y %H:%M:%S GMT").to_string(),
+        )
+        .header(http::header::SERVER, CONNECT_RESPONSE_SERVER)
+        .header(
+            http::header::CACHE_CONTROL,
+            "no-cache, no-store, must-revalidate",
+        )
+        .header("x-request-id", request_id)
+        .header("x-trace-id", trace_id)
+        .body(())
+        .unwrap()
+        .into_parts()
+        .0
+}
+
+/// A random hex string of a random length.
+fn random_hex(rng: &mut impl Rng) -> String {
+    let len = rng.gen_range(CONNECT_RESPONSE_ID_MIN..=CONNECT_RESPONSE_ID_MAX);
+    let bytes: Vec<u8> = (0..len).map(|_| rng.gen::<u8>()).collect();
+    hex::encode(bytes)
+}
+
+/// Encapsulates an HTTP stream implementation
+pub(crate) trait Stream: Send {
+    /// Get the request ID for logging
+    fn id(&self) -> log_utils::IdChain<u64>;
+
+    /// Get the request part
+    fn request(&self) -> &dyn PendingRequest;
+
+    /// Split the stream into the receiving and transmitting parts
+    fn split(self: Box<Self>) -> (Box<dyn PendingRequest>, Box<dyn PendingRespond>);
+}
+
+/// Encapsulates a receiving part of an HTTP stream state
+pub(crate) trait PendingRequest: Send {
+    /// Get the request ID for logging
+    fn id(&self) -> log_utils::IdChain<u64>;
+
+    /// Get the request headers
+    fn request(&self) -> &RequestHeaders;
+
+    /// Clone the request headers of the stream
+    fn clone_request(&self) -> RequestHeaders {
+        let request = self.request();
+        let mut builder = http::Request::builder()
+            .method(request.method.clone())
+            .uri(request.uri.clone())
+            .version(request.version);
+        if let Some(hs) = builder.headers_mut() {
+            *hs = request.headers.clone();
+        }
+        // assume it's ok as original headers were built successfully
+        builder.body(()).unwrap().into_parts().0
+    }
+
+    /// Get the address of a VPN client made the connection request
+    fn client_address(&self) -> io::Result<IpAddr>;
+
+    /// Get the authorization info if some
+    fn auth_info(&self) -> io::Result<Option<authentication::Source<'_>>> {
+        let header = match self
+            .request()
+            .headers
+            .get(http::header::PROXY_AUTHORIZATION)
+        {
+            None => return Ok(None),
+            Some(x) => x,
+        };
+
+        header
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Basic "))
+            .map(|s| Some(authentication::Source::ProxyBasic(s.into())))
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "Unexpected authorization header: {:?}",
+                    net_utils::scrub_request(self.request())
+                ))
+            })
+    }
+
+    /// Get the request authority
+    fn authority(&self) -> io::Result<&Authority> {
+        self.request()
+            .uri
+            .authority()
+            .ok_or_else(|| io::Error::other(format!("Authority not found: {:?}", self.request())))
+    }
+
+    /// Get the user agent
+    fn user_agent(&self) -> Option<String> {
+        self.request()
+            .headers
+            .get(http::header::USER_AGENT)
+            .map(http::header::HeaderValue::to_str)?
+            .ok()
+            .map(String::from)
+    }
+
+    /// Turn the pending request into the [`pipe::Source`] object
+    fn finalize(self: Box<Self>) -> Box<dyn pipe::Source>;
+}
+
+/// Encapsulates a non-responded transmitting part of an HTTP stream state
+pub(crate) trait PendingRespond: Send {
+    /// Get the request ID for logging
+    #[allow(dead_code)]
+    fn id(&self) -> log_utils::IdChain<u64>;
+
+    /// Send the intermediate response to a client. Unlike `send_response()`,
+    /// it does not change the pending state of the object.
+    fn send_intermediate_response(&self, _: ResponseHeaders) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Send the response to a client
+    fn send_response(
+        self: Box<Self>,
+        response: ResponseHeaders,
+        eof: bool,
+    ) -> io::Result<Box<dyn RespondedStreamSink>>;
+
+    /// Send the OK response to a client
+    fn send_ok_response(self: Box<Self>, eof: bool) -> io::Result<Box<dyn RespondedStreamSink>> {
+        self.send_response(Response::<()>::default().into_parts().0, eof)
+    }
+
+    /// Send a bad response to a client
+    fn send_bad_response(
+        self: Box<Self>,
+        status: StatusCode,
+        extra_headers: Vec<(String, String)>,
+    ) -> io::Result<()> {
+        let response = {
+            let mut b = Response::builder().status(status);
+            for (n, v) in extra_headers {
+                b = b.header(n, v);
+            }
+            b.body(()).unwrap()
+        };
+
+        self.send_response(response.into_parts().0, true)
+            .map(|_| ())
+    }
+}
+
+/// An abstract interface for a datagram transmitter implementation
+pub(crate) trait DroppingSink: Send {
+    fn write(&mut self, data: Bytes) -> io::Result<datagram_pipe::SendStatus>;
+}
+
+/// A helper trait which converts a stream sink wrapper into one of the sink types
+pub(crate) trait RespondedStreamSink: Send {
+    fn into_pipe_sink(self: Box<Self>) -> Box<dyn pipe::Sink>;
+    fn into_datagram_sink(self: Box<Self>) -> Box<dyn DroppingSink>;
+}
+
+/// An abstract interface for an HTTP server-side session implementation
+#[async_trait]
+pub(crate) trait HttpCodec: Send {
+    /// Listen to IO events.
+    /// Returns `None` in case the listening finished gracefully and should not be continued,
+    /// `Some` in case a client initiated the new stream which should be processed and listening
+    /// should be continued.
+    async fn listen(&mut self) -> io::Result<Option<Box<dyn Stream>>>;
+
+    /// Shut down the HTTP session gracefully
+    async fn graceful_shutdown(&mut self) -> io::Result<()>;
+
+    /// Get the codec protocol
+    fn protocol(&self) -> Protocol;
+}
+
+/// Turn a [`Stream`] into a [`HttpCodec`] which produces the single stream.
+pub(crate) fn stream_into_codec(stream: Box<dyn Stream>, protocol: Protocol) -> impl HttpCodec {
+    SingleRequestCodec {
+        stream: Some(stream),
+        protocol,
+    }
+}
+
+struct SingleRequestCodec {
+    stream: Option<Box<dyn Stream>>,
+    protocol: Protocol,
+}
+
+#[async_trait]
+impl HttpCodec for SingleRequestCodec {
+    async fn listen(&mut self) -> io::Result<Option<Box<dyn Stream>>> {
+        if let Some(stream) = self.stream.take() {
+            return Ok(Some(stream));
+        }
+
+        futures::future::pending().await
+    }
+
+    async fn graceful_shutdown(&mut self) -> io::Result<()> {
+        if let Some((_, respond)) = self.stream.take().map(Stream::split) {
+            let _ = respond.send_bad_response(http::StatusCode::INTERNAL_SERVER_ERROR, vec![]);
+        }
+
+        Ok(())
+    }
+
+    fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+}

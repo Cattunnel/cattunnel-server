@@ -1,0 +1,618 @@
+# TrustTunnel Endpoint Configuration
+
+This document describes all available configuration settings and configuration files for the TrustTunnel VPN endpoint.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Command Line Arguments](#command-line-arguments)
+- [Configuration Files](#configuration-files)
+    - [Main Settings File (vpn.toml)](#main-settings-file-vpntoml)
+    - [TLS Hosts Settings File (hosts.toml)](#tls-hosts-settings-file-hoststoml)
+    - [Credentials File (credentials.toml)](#credentials-file-credentialstoml)
+    - [Rules File (rules.toml)](#rules-file-rulestoml)
+- [Settings Reference](#settings-reference)
+    - [Core Settings](#core-settings)
+    - [Listen Protocol Settings](#listen-protocol-settings)
+    - [Forward Protocol Settings](#forward-protocol-settings)
+    - [Reverse Proxy Settings](#reverse-proxy-settings)
+    - [ICMP Settings](#icmp-settings)
+    - [Metrics Settings](#metrics-settings)
+    - [Subscription Settings](#subscription-settings)
+- [TLS Hosts Reference](#tls-hosts-reference)
+- [Rules Reference](#rules-reference)
+- [Runtime Configuration](#runtime-configuration)
+
+---
+
+## Overview
+
+The TrustTunnel endpoint uses TOML-formatted configuration files. The main
+configuration is split into:
+
+1. **Main settings file** - Core endpoint configuration (timeouts, protocols, etc.)
+2. **TLS hosts settings file** - TLS certificate and hostname configuration
+3. **Credentials file** - Client authentication credentials
+4. **Rules file** - Connection filtering rules
+
+The `setup_wizard` tool can generate these files interactively.
+
+---
+
+## Command Line Arguments
+
+The endpoint binary accepts the following command line arguments:
+
+| Argument | Short | Description | Default |
+| -------- | ------- | ----------- | ------- |
+| `--version` | `-v` | Print version and exit | - |
+| `--loglvl` | `-l` | Logging level (`info`, `debug`, `trace`) | `info` |
+| `--logfile` | - | File path for storing logs (stdout if not specified) | stdout |
+| `--sentry_dsn` | - | Sentry DSN for error reporting | - |
+| `--jobs` | - | Number of worker threads (defaults to CPU count) | CPU count |
+| `<settings>` | - | **Required.** Path to main settings file | - |
+| `<tls_hosts_settings>` | - | **Required.** Path to TLS hosts settings file | - |
+| `--client_config` | `-c` | Print endpoint config for specified client and exit | - |
+| `--address` | `-a` | Endpoint address to add to client config (requires `-c`). Accepts `ip`, `ip:port`, `domain`, or `domain:port`. Optional when `[subscription]` is enabled: the subscription `address` is used as the fallback. | - |
+| `--client-random-prefix` | `-r` | Use an explicit `client_random_prefix` in the exported client config (requires `-c`). | - |
+| `--generate-client-random-prefix` | - | Generate a new `client_random_prefix`, append a matching allow rule to `rules.toml`, and use it in the exported client config (requires `-c`). | - |
+| `--prefix-length` | - | Length in bytes for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). | `4` |
+| `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
+| `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
+| `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+
+### Examples
+
+```bash
+# Start the endpoint
+./trusttunnel_endpoint vpn.toml hosts.toml
+
+# Start with debug logging
+./trusttunnel_endpoint vpn.toml hosts.toml -l debug
+
+# Start with file logging
+./trusttunnel_endpoint vpn.toml hosts.toml --logfile /var/log/trusttunnel.log
+
+# Export client configuration with IP address
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a 203.0.113.1
+
+# Export client configuration with explicit port
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a 203.0.113.1:443
+
+# Export client configuration with domain name
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com
+
+# Export client configuration with domain name and explicit port
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com:443
+
+# Export client configuration with an explicit client_random_prefix
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --client-random-prefix a0b0/f0f0
+
+# Generate a new client_random_prefix, append an allow rule to rules.toml, and export it
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --generate-client-random-prefix
+
+# Generate a new client_random_prefix with a custom mask
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --generate-client-random-prefix --prefix-mask aaaa7777
+
+# Export client configuration with an auth key for SNI-derived client random
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --client-random-auth-key 00112233445566778899aabbccddeeff
+```
+
+---
+
+## Configuration Files
+
+### Main Settings File (vpn.toml)
+
+The main settings file contains core endpoint configuration. Example:
+
+> Native deployments commonly use `listen_address = "0.0.0.0:443"`.
+> If you run Docker with host-to-container mapping `443:8443`, use
+> `listen_address = "0.0.0.0:8443"` inside `vpn.toml`.
+
+```toml
+# The address to listen on
+listen_address = "0.0.0.0:443"
+
+# Whether IPv6 connections can be routed
+ipv6_available = true
+
+# Whether connections to private network of the endpoint are allowed.
+# Applies to traffic tunneled by clients only, the reverse proxy
+# `server_address` is always reachable.
+allow_private_network_connections = false
+
+# Timeout of an incoming TLS handshake (seconds)
+tls_handshake_timeout_secs = 10
+
+# Timeout of a client listener (seconds)
+client_listener_timeout_secs = 600
+
+# Timeout of outgoing connection establishment (seconds)
+connection_establishment_timeout_secs = 30
+
+# Idle timeout of tunneled TCP connections (seconds)
+tcp_connections_timeout_secs = 604800
+
+# Timeout of tunneled UDP "connections" (seconds)
+udp_connections_timeout_secs = 300
+
+# Path to credentials file
+credentials_file = "credentials.toml"
+
+# Path to rules file (optional)
+rules_file = "rules.toml"
+
+# Listen protocol settings
+[listen_protocols]
+
+[listen_protocols.http1]
+upload_buffer_size = 32768
+
+[listen_protocols.http2]
+initial_connection_window_size = 8388608
+initial_stream_window_size = 131072
+max_concurrent_streams = 1000
+max_frame_size = 16384
+header_table_size = 65536
+
+[listen_protocols.quic]
+recv_udp_payload_size = 1350
+send_udp_payload_size = 1350
+initial_max_data = 104857600
+initial_max_stream_data_bidi_local = 1048576
+initial_max_stream_data_bidi_remote = 1048576
+initial_max_stream_data_uni = 1048576
+initial_max_streams_bidi = 4096
+initial_max_streams_uni = 4096
+max_connection_window = 25165824
+max_stream_window = 16777216
+disable_active_migration = true
+enable_early_data = true
+message_queue_capacity = 4096
+
+# Forward protocol (optional, defaults to direct)
+[forward_protocol]
+direct = {}
+
+# Reverse proxy settings (optional)
+# [reverse_proxy]
+# server_address = "127.0.0.1:8080"
+# path_mask = "/api"
+# h3_backward_compatibility = false
+
+# ICMP settings (optional, requires superuser)
+# [icmp]
+# interface_name = "eth0"
+# request_timeout_secs = 3
+# recv_message_queue_capacity = 256
+
+# Metrics settings (optional)
+# [metrics]
+# address = "127.0.0.1:1987"
+# request_timeout_secs = 3
+# per_client_metrics = false
+```
+
+### TLS Hosts Settings File (hosts.toml)
+
+Configures TLS certificates and hostnames. Example:
+
+```toml
+# Main TLS hosts for traffic tunneling
+[[main_hosts]]
+hostname = "vpn.example.com"
+cert_chain_path = "certs/cert.pem"
+private_key_path = "certs/key.pem"
+
+# Ping hosts for HTTPS health checks (optional)
+[[ping_hosts]]
+hostname = "ping.vpn.example.com"
+cert_chain_path = "certs/cert.pem"
+private_key_path = "certs/key.pem"
+
+# Speed test hosts (optional)
+[[speedtest_hosts]]
+hostname = "speed.vpn.example.com"
+cert_chain_path = "certs/cert.pem"
+private_key_path = "certs/key.pem"
+
+# Reverse proxy hosts (optional, requires reverse_proxy in main settings)
+# [[reverse_proxy_hosts]]
+# hostname = "api.example.com"
+# cert_chain_path = "certs/cert.pem"
+# private_key_path = "certs/key.pem"
+```
+
+### Credentials File (credentials.toml)
+
+Contains client authentication credentials. Example:
+
+```toml
+[[client]]
+username = "user1"
+password = "secure_password_1"
+
+[[client]]
+username = "user2"
+password = "secure_password_2"
+```
+
+### Rules File (rules.toml)
+
+Defines connection filtering rules. Example:
+
+```toml
+# Rules are evaluated in order, first matching rule's action is applied.
+# If no rules match, the connection is allowed by default.
+
+# Deny connections from specific IP range
+[[rule]]
+cidr = "192.168.1.0/24"
+action = "deny"
+
+# Allow connections with specific TLS client random prefix
+[[rule]]
+client_random_prefix = "aabbcc"
+action = "allow"
+
+# Deny connections matching both IP and client random with mask
+[[rule]]
+cidr = "10.0.0.0/8"
+client_random_prefix = "a0b0/f0f0"
+action = "deny"
+```
+
+---
+
+## Settings Reference
+
+### Core Settings
+
+| Setting                                 | Type    | Default       | Description                                                      |
+|-----------------------------------------|---------|---------------|------------------------------------------------------------------|
+| `listen_address`                        | String  | `0.0.0.0:443` | Address and port to listen on                                    |
+| `ipv6_available`                        | Boolean | `true`        | Whether IPv6 connections can be routed                           |
+| `allow_private_network_connections`     | Boolean | `false`       | Allow connections to endpoint's private network                  |
+| `tls_handshake_timeout_secs`            | Integer | `10`          | TLS handshake timeout in seconds                                 |
+| `client_listener_timeout_secs`          | Integer | `600`         | Client listener timeout in seconds (10 minutes)                  |
+| `connection_establishment_timeout_secs` | Integer | `30`          | Outgoing connection timeout in seconds                           |
+| `tcp_connections_timeout_secs`          | Integer | `604800`      | Idle TCP connection timeout (1 week)                             |
+| `udp_connections_timeout_secs`          | Integer | `300`         | UDP connection timeout (5 minutes)                               |
+| `credentials_file`                      | String  | -             | Path to credentials file                                         |
+| `rules_file`                            | String  | -             | Path to rules file (optional)                                    |
+| `speedtest_enable`                      | Boolean | `false`       | Enable speedtest handler on main hosts                           |
+| `ping_enable`                           | Boolean | `false`       | Enable ping handler on main hosts                                |
+| `ping_path`                             | String  | -             | Optional path prefix for ping on main hosts                      |
+| `speedtest_path`                        | String  | -             | Optional path prefix for speedtest on main hosts                 |
+| `auth_failure_status_code`              | Integer | `407`         | HTTP status code on auth failure for CONNECT requests            |
+| `non_connect_auth_failure_status_code`  | Integer | -             | HTTP status code on auth failure for non-CONNECT requests        |
+
+Ping and speedtest are matched only via their configured paths. Default paths are: `/ping` and `/speedtest`.
+`auth_failure_status_code` and `non_connect_auth_failure_status_code` accept `407`, `405`, `404`, or `403`.
+If `non_connect_auth_failure_status_code` is not set, it falls back to `auth_failure_status_code`.
+Warning: using a value other than `407` for `auth_failure_status_code` breaks proxy authentication in Chrome.
+
+### Listen Protocol Settings
+
+Configure which protocols the endpoint accepts. At least one protocol must be enabled.
+
+#### HTTP/1.1 Settings (`[listen_protocols.http1]`)
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `upload_buffer_size` | Integer | `32768` | Buffer size for outgoing traffic (bytes) |
+
+#### HTTP/2 Settings (`[listen_protocols.http2]`)
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `initial_connection_window_size` | Integer | `8388608` | Connection-level flow control window (8 MB) |
+| `initial_stream_window_size` | Integer | `131072` | Stream-level flow control window (128 KB) |
+| `max_concurrent_streams` | Integer | `1000` | Maximum concurrent streams |
+| `max_frame_size` | Integer | `16384` | Maximum HTTP/2 frame payload size |
+| `header_table_size` | Integer | `65536` | Maximum header frame size |
+
+#### QUIC/HTTP/3 Settings (`[listen_protocols.quic]`)
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `recv_udp_payload_size` | Integer | `1350` | Maximum received UDP payload size |
+| `send_udp_payload_size` | Integer | `1350` | Maximum sent UDP payload size |
+| `initial_max_data` | Integer | `104857600` | Initial max connection data (100 MB) |
+| `initial_max_stream_data_bidi_local` | Integer | `1048576` | Local bidirectional stream flow control (1 MB) |
+| `initial_max_stream_data_bidi_remote` | Integer | `1048576` | Remote bidirectional stream flow control (1 MB) |
+| `initial_max_stream_data_uni` | Integer | `1048576` | Unidirectional stream flow control (1 MB) |
+| `initial_max_streams_bidi` | Integer | `4096` | Maximum bidirectional streams |
+| `initial_max_streams_uni` | Integer | `4096` | Maximum unidirectional streams |
+| `max_connection_window` | Integer | `25165824` | Maximum connection window (24 MB) |
+| `max_stream_window` | Integer | `16777216` | Maximum stream window (16 MB) |
+| `disable_active_migration` | Boolean | `true` | Disable active connection migration |
+| `enable_early_data` | Boolean | `true` | Enable 0-RTT early data |
+| `message_queue_capacity` | Integer | `4096` | QUIC multiplexer queue capacity |
+
+### Forward Protocol Settings
+
+Configure how the endpoint forwards connections.
+
+#### Direct Forwarding (default)
+
+```toml
+[forward_protocol]
+direct = {}
+```
+
+Routes connections directly to target hosts.
+
+#### SOCKS5 Forwarding
+
+```toml
+[forward_protocol.socks5]
+address = "127.0.0.1:1080"
+extended_auth = false
+```
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `address` | String | - | **Required.** SOCKS5 proxy address |
+| `extended_auth` | Boolean | `false` | Enable extended authentication |
+
+### Reverse Proxy Settings
+
+Optional. Enables TLS termination and HTTP protocol translation.
+
+```toml
+[reverse_proxy]
+server_address = "127.0.0.1:8080"
+path_mask = "/api"
+h3_backward_compatibility = false
+```
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `server_address` | String | - | **Required.** Origin server address |
+| `path_mask` | String | - | **Required.** Path prefix for routing (must start with `/`) |
+| `h3_backward_compatibility` | Boolean | `false` | Override HTTP method for H3→H1 translation |
+
+The reverse proxy translates HTTP/x traffic to HTTP/1.1 towards the origin server. Translated requests include the `X-Original-Protocol` header (`HTTP1` or `HTTP3`).
+
+`server_address` is configured by the endpoint operator and is therefore not affected by `allow_private_network_connections`: an origin server on a loopback or private address stays reachable even when tunneled client traffic to private networks is forbidden.
+
+### ICMP Settings
+
+Optional. Enables ICMP forwarding. Requires superuser privileges on some systems.
+
+```toml
+[icmp]
+interface_name = "eth0"
+request_timeout_secs = 3
+recv_message_queue_capacity = 256
+```
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `interface_name` | String | `eth0` (Linux) / `en0` (macOS) | Network interface for ICMP socket |
+| `request_timeout_secs` | Integer | `3` | ICMP request timeout in seconds |
+| `recv_message_queue_capacity` | Integer | `256` | Message queue capacity per client |
+
+### Metrics Settings
+
+Optional. Enables Prometheus-compatible metrics endpoint.
+
+```toml
+[metrics]
+address = "127.0.0.1:1987"
+request_timeout_secs = 3
+per_client_metrics = false
+```
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
+| `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+| `per_client_metrics` | Boolean | `false` | Expose per-user metric series and the `/clients` endpoint labelled with the authenticated username. Exposes usernames and client IPs on the metrics listener. |
+
+### Subscription Settings
+
+Optional. Enables an HTTPS subscription endpoint that serves a per-user JSON
+configuration over an existing main TLS host.
+
+```toml
+[subscription]
+enabled = true
+hostname = "vpn.example.com"
+path = "/subscription"
+address = "203.0.113.1:443"
+name = "Acme Corp VPN"
+dns_upstreams = ["tls://1.1.1.1", "tls://8.8.8.8"]
+custom_sni = "example.org"
+client_random_prefix = "a0b0/f0f0"
+```
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | Boolean | `false` | Master switch |
+| `hostname` | String | - | Must match a `main_hosts` hostname |
+| `path` | String | `"/subscription"` | HTTP path served (exact match) |
+| `address` | String | - | `host:port` / `ip:port` placed in the JSON |
+| `name` | String | - | (Optional) Configuration name hint |
+| `dns_upstreams` | Array | `[]` | (Optional) DNS upstreams |
+| `custom_sni` | String | - | (Optional) Custom TLS SNI |
+| `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
+
+All fields are validated on every endpoint invocation (including the
+`--client_config` export) whenever the `[subscription]` section is present in
+`vpn.toml`, even when `enabled = false`.
+
+The `address` value is also reused by the `--client_config` export
+if the `--address` is not specified
+
+The endpoint requires HTTP Basic Auth (`Authorization` header) matching an
+entry in `credentials.toml`; the response body contains only that user's
+credentials. Non-GET requests return `405`; missing or invalid credentials
+return `401`; an authenticated request while subscription is disabled returns
+`403`; otherwise the response is `200` with the per-user JSON body.
+
+---
+
+## TLS Hosts Reference
+
+Each TLS host entry requires:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `hostname` | String | **Required.** Hostname for TLS SNI matching (must be unique) |
+| `cert_chain_path` | String | **Required.** Path to PEM certificate chain file |
+| `private_key_path` | String | **Required.** Path to PEM private key file |
+
+### Host Types
+
+- **`main_hosts`** - Primary hosts for VPN traffic tunneling and service requests
+- **`ping_hosts`** - Respond with `200 OK` to HTTPS GET requests (health checks)
+- **`speedtest_hosts`** - Handle speed test requests:
+    - `GET /Nmb.bin` (N=1-100): Download N megabytes
+    - `POST /upload.html`: Upload test (up to 120 MB)
+- **`reverse_proxy_hosts`** - Forward to reverse proxy server (requires `[reverse_proxy]`)
+
+---
+
+## Rules Reference
+
+Rules filter incoming connections based on client IP and/or TLS client random data.
+
+### Rule Structure
+
+```toml
+[[rule]]
+cidr = "192.168.0.0/16"           # Optional: IP range in CIDR notation
+client_random_prefix = "aabbcc"   # Optional: Hex-encoded prefix or prefix/mask
+client_random_auth_key = "0011..." # Optional: Hex auth key for derived client random
+action = "allow"                  # Required: "allow" or "deny"
+```
+
+### Evaluation
+
+1. Rules are evaluated in order
+2. First matching rule's action is applied
+3. If no rules match, connection is **allowed** by default
+4. If both `cidr` and a client random condition (`client_random_prefix` or `client_random_auth_key`) are specified, both must match
+5. `client_random_prefix` and `client_random_auth_key` are mutually exclusive; if both are set, only the auth key is enforced and the prefix is ignored
+
+### Client Random Matching
+
+Three formats are supported:
+
+**Simple prefix matching:**
+
+```toml
+client_random_prefix = "aabbcc"
+```
+
+Matches if TLS client random starts with `0xaabbcc`.
+
+**Bitwise matching with mask:**
+
+```toml
+client_random_prefix = "a0b0/f0f0"
+```
+
+Matches if `(client_random & 0xf0f0) == (0xa0b0 & 0xf0f0)`.
+
+**Key-derived client random (auth key):**
+
+```toml
+client_random_auth_key = "00112233445566778899aabbccddeeff"
+```
+
+Matches if the client proves possession of a shared key inside the handshake: the last 16 bytes of the 32-byte `client_random` must equal
+
+```text
+AES-128-ECB(SHA256(SNI)[0:16], HKDF-SHA256(secret = client_random_auth_key, salt = client_random[0:16]))
+```
+
+The first 16 bytes are random per connection, so the resulting `client_random` differs every handshake while the check stays deterministic, and the ClientHello remains indistinguishable from a normal one.
+
+Format and matching constraints:
+
+- The key must be a non-empty valid hex string. Keys of 16 bytes (32 hex chars) or more are recommended; shorter keys are rejected when the rule is created by the setup wizard.
+- The check depends on the SNI and the client random sent in the handshake: if the rules file contains at least one auth key rule, connections evaluated without a client random or with an empty SNI are denied outright.
+- The derivation uses the SNI as it appears in the ClientHello. If the client config sets `custom_sni`, that value is what gets validated.
+- The key is a credential: whoever knows it can authorize. It is embedded into exported client configs and deep-links, so handle it like a password.
+- Clients must support the `client_random_auth_key` config field to connect under an auth key rule.
+
+### Examples
+
+```toml
+# Block specific IP range
+[[rule]]
+cidr = "192.168.1.0/24"
+action = "deny"
+
+# Allow specific client random prefix
+[[rule]]
+client_random_prefix = "deadbeef"
+action = "allow"
+
+# Block internal networks with specific client signature
+[[rule]]
+cidr = "10.0.0.0/8"
+client_random_prefix = "bad0/ff00"
+action = "deny"
+
+# Allow only clients that prove an auth key bound to the SNI
+[[rule]]
+client_random_auth_key = "00112233445566778899aabbccddeeff"
+action = "allow"
+
+# Catch-all deny (place last)
+[[rule]]
+action = "deny"
+```
+
+---
+
+## Runtime Configuration
+
+### Hot Reloading TLS Hosts and Subscription Settings
+
+Send `SIGHUP` to the endpoint process to reload TLS hosts settings and the
+optional `[subscription]` section without restart:
+
+```bash
+kill -HUP $(pidof trusttunnel_endpoint)
+```
+
+This reloads the TLS hosts file and the `[subscription]` section of `vpn.toml`
+specified at startup. If the new `[subscription]` section fails to parse or
+validate, the previously loaded subscription configuration is kept and a
+warning is logged.
+
+### Systemd Service
+
+A systemd service template is provided. Default configuration assumes files in `/opt/trusttunnel/`:
+
+```bash
+# Install service
+sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now trusttunnel
+
+# Reload TLS settings
+sudo systemctl reload trusttunnel
+
+# View logs
+sudo journalctl -u trusttunnel -f
+```
+
+---
+
+## See Also
+
+- [README.md](README.md) - Quick start guide
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Development documentation
+- [PROTOCOL.md](PROTOCOL.md) - Protocol specification
+- [CHANGELOG.md](CHANGELOG.md) - Changelog
