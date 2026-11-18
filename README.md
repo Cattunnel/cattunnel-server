@@ -20,7 +20,7 @@ This repository is the server (endpoint) used by [CatTunnel](https://github.com/
 
 Changes on top of upstream:
 
-- **NineLives transport (XHTTP protocol 1).** A second transport next to CONNECT: paired HTTP POST/GET requests with a signed handshake, optional body encryption, session resume and a global memory budget. It is off unless `xhttp_enable = true`. Wire format: [docs/xhttp-protocol.md](docs/xhttp-protocol.md); settings: section "XHTTP protocol 1 and memory" below.
+- **NineLives transport (XHTTP protocol 1).** A second transport next to CONNECT: paired HTTP POST/GET requests with a signed handshake, optional body encryption, session resume and a global memory budget. It is not compatible with Xray's XHTTP. Session resume is on by default for 60 s (`xhttp_resume_timeout`; `0` turns it off). It is off unless `xhttp_enable = true`. Wire format: [docs/xhttp-protocol.md](docs/xhttp-protocol.md); settings: section "XHTTP protocol 1 and memory" below.
 - **Decoy site (reverse proxy).** HTTP/1.1 keep-alive, chunked bodies and trailers are passed through correctly, chunk size lines and trailers are limited, and HTTP/2 is allowed on reverse proxy hosts.
 - **CONNECT.** The `200` answer carries plausible headers.
 - **TLS listener.** A ClientHello split across TLS records is joined; non-TLS input is rejected at once.
@@ -603,7 +603,5 @@ the session can resume when space is available. The budget does not include TLS/
 allocator RSS overhead or kernel sockets. Metrics expose `xhttp_reserved_bytes` and
 `xhttp_memory_rejections_total` (failed session or buffer reservations).
 
-`xhttp_resume_timeout = 0` continues to disable resumption. Body encryption remains optional for direct connections;
-Future protocol 2 reserves improved native encryption and CDN; protocol 3 reserves Sudoku.
-X5/N7 and link integration are still pending. Interoperability and D2/D3 traffic-shape validation
-are required before release.
+`xhttp_resume_timeout` defaults to 60 s; `0` disables resumption. Body encryption remains optional for direct connections.
+Protocol versions 2 and 3 and the CDN mode are reserved and not implemented.
