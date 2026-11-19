@@ -1,7 +1,8 @@
-# TrustTunnel Deep Link Specification
+# Deep Link Specification
 
-This document describes the deep link URI scheme used to share TrustTunnel
-endpoint configurations between devices and applications.
+This document describes the `tt://` deep link URI scheme used to share endpoint
+configurations between devices and applications. The scheme comes from upstream
+TrustTunnel; CatTunnel clients use it as is and add the extension tags listed below.
 
 Status: version 2
 
@@ -102,6 +103,33 @@ in one or two bytes.
 `subscription_url` is present, all static connection parameters are OPTIONAL
 and serve as a fallback for the initial connection attempt if the first
 subscription fetch fails.
+
+### CatTunnel extension tags
+
+The CatTunnel client reads additional tags in the `0x40..0x51` range. They are not produced by
+`trusttunnel_endpoint`; a subscription service or the app itself writes them. Parsers that
+follow this document skip unknown tags. Absent tags leave the client's own setting unchanged.
+
+| Tag | Field | Value type | Meaning |
+| --- | --- | --- | --- |
+| `0x40` | `ru_exit` | Bool | Reverse split: only traffic that matches the client's built-in Russian domain and network lists goes through this server |
+| `0x41` | `anti_dpi_mode` | 1 byte | Anti-DPI technique `1`..`3`, or `4` = automatic |
+| `0x42` | `tls_profile` | String | ClientHello profile, for example `chrome`, `firefox`, `safari` |
+| `0x43` | `anti_dpi_desync` | String | Custom split in ByeDPI syntax (`-s`, `-o`, `-d`) |
+| `0x44` | `h2_padding_frames` | 1 byte | HTTP/2 padding: maximum padded frames per stream, `1`..`64` |
+| `0x45` | `block_quic` | Bool | Refuse UDP to port 443 inside the tunnel |
+| `0x46` | `h2_padding_frames_min` | VarInt | Minimum padded frames per stream |
+| `0x47` | `h2_padding_per_stream` | Bool | Count padded frames per stream instead of per session |
+| `0x48` | `h2_padding_min_bytes` | VarInt | Minimum padding per frame, bytes |
+| `0x49` | `h2_padding_max_bytes` | VarInt | Maximum padding per frame, bytes |
+| `0x4A` | `h2_padding_stream_bytes` | VarInt | Padding budget per stream, bytes |
+| `0x4B` | `h2_padding_session_bytes` | VarInt | Padding budget per session, bytes |
+| `0x4C` | `keepalive_interval_secs` | VarInt | Keepalive interval of an idle session |
+| `0x4D` | `keepalive_signal` | String | Keepalive kind |
+| `0x4E` | `session_lifetime_secs` | VarInt | Session lifetime before a planned reconnect |
+| `0x4F` | `xhttp_enable` | Bool | Use the NineLives transport ([docs/ninelives.md](docs/ninelives.md)) |
+| `0x50` | `xhttp_path` | String | NineLives path prefix |
+| `0x51` | `xhttp_server_key` | String | Server Ed25519 public key for NineLives, base64 (44 characters) |
 
 ### Encoding Rules
 
@@ -204,7 +232,7 @@ deep link:
 ### Desktop (macOS / Windows / Linux)
 
 The `tt://?` URI can be passed as a command-line argument or handled via OS URI
-scheme registration. The TrustTunnel client or setup wizard parses the payload
+scheme registration. The client or setup wizard parses the payload
 using the same decode logic.
 
 ### QR Codes

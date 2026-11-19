@@ -3,16 +3,14 @@ name: Lint Rust
 on:
   push:
     branches:
-      - master
-      - 'stable-*'
-      - 'dev-*'
+      - main
   pull_request:
   workflow_dispatch:
 
 jobs:
   lint:
     runs-on: ubuntu-latest
-    if: github.repository == 'TrustTunnel/TrustTunnel'
+    if: github.repository == 'Cattunnel/cattunnel-server'
     steps:
       - name: Checkout
         uses: actions/checkout@v6

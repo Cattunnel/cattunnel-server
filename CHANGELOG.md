@@ -1,39 +1,88 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+CatTunnel server is a fork of the TrustTunnel endpoint 1.3.0-beta.2. The changes of the fork
+come first; the upstream history before the fork is kept below it.
 
 ## [Unreleased]
 
-### Added
+### Removed
+
+- Upstream CI and release tooling that targets the upstream organisation: `bamboo-specs/`,
+  `fastlane/`, `Gemfile`, `Gemfile.lock`, `scripts/ci/`, `Dockerfile.prebuilt`,
+  `VERIFY_RELEASES.md`, and the GitHub workflows `mirror.yaml`, `prepare-release.yml`,
+  `publish-release.yml`, `deploy-dockerhub.yml`, `run-tests-private.yml` and `bench.yml`.
 
 ### Changed
 
-### Deprecated
+- `scripts/install.sh` no longer downloads upstream release archives: it prints a message
+  and exits with an error. Build from source instead (see README).
+- The remaining workflows (Markdown and Rust lint, public tests, security audit) run in this
+  repository on `main`.
+- Documentation describes CatTunnel server; binary, crate and file names are unchanged.
 
-### Removed
+## [1.5.9] - 2026-11-18
+
+Endpoint revision `1.3.0-beta.2-32-ga12e73a`, released together with CatTunnel 1.5.9.
+
+### Added
+
+- NineLives transport (XHTTP protocol 1): paired HTTP/2 `GET`/`POST` requests per TCP session,
+  framed with offsets and acknowledgements; settings `xhttp_enable`, `xhttp_path`,
+  `xhttp_supported_versions`, `transport_mode`. Not compatible with Xray XHTTP.
+- NineLives body encryption (suite 1): X25519 key exchange signed with Ed25519
+  (`xhttp_secret_key`), HKDF-SHA256, AES-128-GCM per direction.
+- NineLives session resume with a per-session token and a challenge-bound HMAC proof;
+  `xhttp_resume_timeout` (60 s by default, `0` turns it off).
+- Global memory budget for NineLives buffers (`xhttp_memory_limit`, `xhttp_unacked_limit`);
+  metrics `xhttp_reserved_bytes` and `xhttp_memory_rejections_total`.
+- JA4 fingerprints of incoming ClientHellos are counted and served on `/ja4` of the metrics
+  listener.
+
+### Changed
+
+- The `200` answer to `CONNECT` carries `date`, `server`, `cache-control` and two random
+  identifiers of random length.
+- The TLS listener joins a ClientHello split across several TLS records before parsing it;
+  input that is not TLS is rejected at once.
+- HTTP/2 is allowed on reverse proxy hosts.
 
 ### Fixed
 
+- Reverse proxy: an HTTP/1.1 connection serves the next request; chunked bodies keep their
+  framing and trailers; a chunked response ends at the last chunk; the request body is sent
+  while the response is awaited.
+- NineLives: the upload is no longer stalled by a missing acknowledgement under load; data
+  read before a cancellation is not lost.
+
 ### Security
 
-- [Security] Define strict XHTTP protocol 1 with signed suite/capability negotiation, challenge-bound resume proofs, fresh resume keys, explicit FIN acknowledgements, bounded buffer accounting and reserved extension identifiers; remove legacy fallback.
+- Strict XHTTP protocol 1: signed suite and capability negotiation, challenge-bound resume
+  proofs, fresh keys on resume, explicit FIN acknowledgements, bounded buffer accounting,
+  reserved extension identifiers; the legacy fallback is removed.
+- Reverse proxy: the size line of a chunk and the trailers of a body are limited.
 
-## [1.3.0-beta.2] - 2026-10-09
+## Upstream TrustTunnel history (before the fork)
 
-### Added
+The entries below are the upstream TrustTunnel endpoint changelog up to the version this fork
+is based on. Links point to the upstream repository.
+
+### [1.3.0-beta.2] - 2026-10-09
+
+#### Added
 
 - [Feature] Added `client_random_auth_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the auth key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. The auth key and prefix/mask are mutually exclusive; the auth key takes priority. Added the `--client-random-auth-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
 
-### Changed
+#### Changed
 
 - `gen_client_config` now fails with an error instead of warning and silently dropping the value when the explicit `--client-random-prefix` or `--client-random-auth-key` has no matching allow rule in `rules.toml`.
 - `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for auth key validation.
 
-## [1.3.0-beta.1] - 2026-10-01
+### [1.3.0-beta.1] - 2026-10-01
 
-### Added
+#### Added
 
 - Subscription URL: clients can provision and refresh their configuration from a stable HTTPS URL served by the endpoint.
     - Endpoint: serve a per-user subscription JSON over HTTPS via the new optional `[subscription]` section in `vpn.toml`; reload it on `SIGHUP`.
@@ -41,14 +90,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Deep-link format v2: new `subscription_url` TLV tag (`0x0E`); when present, static connection parameters are optional, enabling subscription-only links.
 - [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
 
-### Fixed
+#### Fixed
 
 - [Fix] 32-bit targets (e.g. `linux/arm`): `net_utils::varint_len` compared the value against a literal that does not fit into a 32-bit `usize`, so `cargo build` failed with "literal out of range for `usize`".
 - [Fix] `Dockerfile`: the build stage now uses Debian 12 (bookworm) instead of the end-of-life Debian 11 (bullseye), and pins Rust 1.95 to match `rust-toolchain.toml`.
 
-## [1.1.0] - 2026-09-01
+### [1.1.0] - 2026-09-01
 
-### Added
+#### Added
 
 - [Feature] Optional per-user metrics behind the `per_client_metrics` metrics
   config flag (default `false`). When enabled, `/metrics` additionally exposes
@@ -58,54 +107,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   traffic, IP). Aggregate metrics are unchanged. Exposes usernames and client
   IPs, so only enable it on a protected metrics listener.
 
-### Changed
+#### Changed
 
 - The released version is now derived from the git tag instead of a hardcoded value; `trusttunnel_endpoint --version` reports the version of the tag it was built from.
 
-### Fixed
+#### Fixed
 
 - `allow_private_network_connections = false` no longer blocks the `[reverse_proxy]` `server_address`: the origin server address comes from the endpoint configuration, so a loopback or private address stays reachable while tunneled client traffic to private networks remains forbidden.
 - `is_global_ipv6` incorrectly classified global unicast IPv6 addresses (e.g. `2001:4860:4860::8888`) as non-global.
 - UDP timeout cleanup no longer leaks outbound sockets: the expired-connection path now passes the reverse-oriented meta to `on_connection_closed`, matching the direct forwarder's orientation contract so the kernel UDP socket and its `outbound_udp_sockets` metric are actually released after `udp_connections_timeout_secs` of inactivity.
 
-## [1.0.41] - 2026-04-30
+### [1.0.41] - 2026-04-30
 
-### Added
+#### Added
 
 - `non_connect_auth_failure_status_code` config key to control the HTTP status code returned on authentication failure for non-CONNECT requests. Extend allowed values for `auth_failure_status_code` and `non_connect_auth_failure_status_code` to 407, 405, 404, and 403.
 
-## [1.0.28] - 2026-03-25
+### [1.0.28] - 2026-03-25
 
-### Added
+#### Added
 
 - `trusttunnel_endpoint -c` can now generate `client_random_prefix` values automatically, append matching allow rules to `rules.toml`, and embed the generated value into exported client configs.
 
-## [1.0.17] - 2026-03-10
+### [1.0.17] - 2026-03-10
 
-### Added
+#### Added
 
 - `ping_enable`, `ping_path`, `speedtest_enable` and `speedtest_path` config keys to configure ping and speedtest handlers.
 - `auth_failure_status_code` config key to control the HTTP status code returned on authentication failure (407 or 405). Defaults to 407.
 
-### Fixed
+#### Fixed
 
 - Reverse proxy routing for H2/H3.
 
-## [1.0.16] - 2026-03-09
+### [1.0.16] - 2026-03-09
 
-### Fixed
+#### Fixed
 
 - HTTP/1.1 codec busy loop when receiving partial request headers.
 
-## [1.0.13] - 2026-03-04
+### [1.0.13] - 2026-03-04
 
-### Fixed
+#### Fixed
 
 - Change deep-link format from `tt://` to `tt://?`. For backward compatibility, `tt://` is still supported.
 
-## [1.0.11] - 2026-03-02
+### [1.0.11] - 2026-03-02
 
-### Security
+#### Security
 
 - Fixed traffic leaking to local network via UDP, ICMP, and SOCKS5 forwarders
   when `allow_private_network_connections` is set to `false`.
@@ -115,9 +164,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Handle IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) in `is_global_ip`
   (Based on [GitHub PR #79](https://github.com/TrustTunnel/TrustTunnel/pull/79) by @andrew-morris)
 
-## [1.0.7] - 2026-02-26
+### [1.0.7] - 2026-02-26
 
-### Added
+#### Added
 
 - Per-client connection limits
     - Optional limits for simultaneous HTTP/2 and HTTP/3 connections per client credentials
@@ -132,15 +181,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Added new `connection_limiter` module with `ConnectionLimiter` and `ConnectionGuard` types
     - Added `connection_limiter` field to `core::Context`
 
-## [1.0.6] - 2026-02-26
+### [1.0.6] - 2026-02-26
 
-### Added
+#### Added
 
 - Support for X25519MLKEM768 post-quantum group.
 
-## [1.0.5] - 2026-02-26
+### [1.0.5] - 2026-02-26
 
-### Added
+#### Added
 
 - The `-a` flag now accepts `domain` and `domain:port` in addition to `ip` and `ip:port`.
   The exported client configuration will contain the domain name, which the client resolves via DNS at connect time.
@@ -148,9 +197,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - When listening on `[::]`, the endpoint now explicitly sets `IPV6_V6ONLY=false` to accept
   both IPv4 and IPv6 connections on a single socket (dual-stack).
 
-## [1.0.1] - 2026-02-25
+### [1.0.1] - 2026-02-25
 
-### Added
+#### Added
 
 - New `trusttunnel-deeplink` library crate for encoding/decoding `tt://` URIs
 - `client_random_prefix` field to client configuration export
@@ -158,68 +207,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - Validates hex format and checks against `rules.toml`
     - Added to deep-link format as tag 0x0B
 
-## [0.9.127] - 2026-02-09
+### [0.9.127] - 2026-02-09
 
-### Added
+#### Added
 
 - GPG signing of the endpoint binaries.
 
-## [0.9.122] - 2026-01-30
+### [0.9.122] - 2026-01-30
 
-### Changed
+#### Changed
 
 - Endpoint now requires credentials when listening on a public address.
 - Added support of shortened QUIC settings names in configuration files.
 
-## [0.9.115] - 2026-01-23
+### [0.9.115] - 2026-01-23
 
-### Security
+#### Security
 
 - Fixed an issue where `client_random_prefix` rules didn't match when Anti-DPI or post-quantum cryptography was enabled.
   (<https://github.com/TrustTunnel/TrustTunnel/security/advisories/GHSA-fqh7-r5gf-3r87>)
 
-## [0.9.114] - 2026-01-23
+### [0.9.114] - 2026-01-23
 
-### Security
+#### Security
 
 - Fixed an issue where `allow_private_network_connections` set to false could be bypassed
   when a numeric address was used.
   (<https://github.com/TrustTunnel/TrustTunnel/security/advisories/GHSA-hgr9-frvw-5r76>)
 
-## [0.9.87] - 2025-12-22
+### [0.9.87] - 2025-12-22
 
-### Added
+#### Added
 
 - Automatic Let's Encrypt certificate generation to `setup_wizard`
 - [CONFIGURATION.md](CONFIGURATION.md)
 - Improved the CLI interface of `setup_wizard` and provided better post-setup
   guidance there.
 
-## [0.9.77] - 2025-12-21
+### [0.9.77] - 2025-12-21
 
-### Added
+#### Added
 
 - Install script for the endpoint
 - Linter scripts and reformatted the code accordingly
 
-### Changed
+#### Changed
 
 - Structure of the `scripts` folder
 
-### Fixed
+#### Fixed
 
 - Project warnings
 
-## [0.9.61] - 2024-12-10
+### [0.9.61] - 2024-12-10
 
-### Changed
+#### Changed
 
 - Removed old docker image
 - Added new [docker image](Dockerfile) with improved build and run logic
 
-## [0.9.56] - 2023-07-20
+### [0.9.56] - 2023-07-20
 
-### Added
+#### Added
 
 - A [docker image](docker/Dockerfile) with a configured and running endpoint.
 - A [Makefile](Makefile) to simplify building and running the endpoint.
@@ -227,21 +276,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   E.g., with `setup_wizard --lib-settings vpn.toml` it won't ask a user for the library
   settings file path.
 
-## [0.9.47] - 2023-06-26
+### [0.9.47] - 2023-06-26
 
-### Removed
+#### Removed
 
 - RADIUS-based authenticator
 
-## [0.9.45] - 2023-06-06
+### [0.9.45] - 2023-06-06
 
-### Changed
+#### Changed
 
 - The executable now expects that the configuration files are TOML-formatted
 
-## [0.9.38] - 2023-04-03
+### [0.9.38] - 2023-04-03
 
-### Fixed
+#### Fixed
 
 - Enormous timeout of TCP connections establishment procedure.
   API changes in the library:
@@ -250,9 +299,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The executable related changes:
     - the settings file is changed accordingly to the changes described above
 
-## [0.9.36] - 2023-04-03
+### [0.9.36] - 2023-04-03
 
-### Changed
+#### Changed
 
 - The endpoint is now capable of handling service requests on the main tls domain.
   API changes in the library:
@@ -262,9 +311,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The executable related changes:
     - the settings file is changed accordingly to the changes described above
 
-## [0.9.30] - 2023-03-06
+### [0.9.30] - 2023-03-06
 
-### Added
+#### Added
 
 - Support for dynamic reloading of TLS hosts settings.
   API changes in the library:
@@ -279,9 +328,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - The executable is now handling the SIGHUP signal to trigger the reloading
       ([see here](./README.md#dynamic-reloading-of-tls-hosts-settings) for details)
 
-## [0.9.29] - 2023-03-06
+### [0.9.29] - 2023-03-06
 
-### Changed
+#### Changed
 
 - Removed blocking `core::Core::listen()` method. The library user must now set up a tokio runtime itself.
   The library API changes:
@@ -293,9 +342,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - `threads_number` field in a settings file is now ignored
     - The number of worker threads may be specified via commandline argument (see the executable help for details)
 
-## [0.9.28] - 2023-03-03
+### [0.9.28] - 2023-03-03
 
-### Changed
+#### Changed
 
 - Added support for configuring the library with multiple TLS certificates.
   API changes:
@@ -304,19 +353,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     - `settings::Settings::speed_tls_host_info` is renamed to `settings::Settings::speed_tls_hosts` and is now a vector of hosts
     - `settings::ReverseProxySettings::tls_host_info` is renamed to `settings::ReverseProxySettings::tls_hosts` and is now a vector of hosts
 
-## [0.9.24] - 2022-11-21
+### [0.9.24] - 2022-11-21
 
-### Added
+#### Added
 
 - Speedtest support
 
-## [0.9.13]
+### [0.9.13]
 
-### Changed
+#### Changed
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...HEAD
 [1.3.0-beta.2]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...v1.3.0-beta.2
 [1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
 [1.1.0]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.41...v1.1.0

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert a tt://? deep link URI back to a TrustTunnel endpoint TOML config.
+"""Convert a tt://? deep link URI back to an endpoint TOML config.
 
 Usage:
     python3 deeplink_to_config.py <tt://?...>

@@ -20,8 +20,8 @@ This project is compatible with Linux and macOS systems.
 
 Run `make init` to prepare the development environment.
 
-- Rust version 1.85 or higher
-    - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.85 -y`
+- Rust 1.95 (pinned in `rust-toolchain.toml`)
+    - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.95 -y`
 - CMake version 3.31.6 or higher
     - macOS: `brew install cmake`
     - Linux (Debian/Ubuntu): `apt install cmake`
@@ -153,7 +153,9 @@ file.
 ## Benchmarking
 
 The project includes a benchmark suite for measuring VPN throughput. See
-[bench/README.md](bench/README.md) for setup and usage instructions.
+[bench/README.md](bench/README.md) for setup and usage instructions. The suite comes from
+upstream: by default it builds the upstream command-line client and compares it with
+WireGuard and a direct connection.
 
 ---
 

@@ -1,17 +1,21 @@
-# TrustTunnel Protocol Specification
+# Tunnel Protocol Specification
 
 **Version 1.0**
 
+CatTunnel server implements this protocol, which comes from upstream TrustTunnel and is
+referred to below as the TrustTunnel protocol. The CatTunnel additions that change what goes
+over the wire (the `CONNECT` answer headers, client-side HTTP/2 padding and the NineLives
+transport) are described in [docs/features.md](docs/features.md) and
+[docs/ninelives.md](docs/ninelives.md).
+
 ## Abstract
 
-TrustTunnel is a VPN protocol designed to tunnel network traffic through
-standard HTTP/2 and HTTP/3 (QUIC) connections. By leveraging widely-used web
-protocols, TrustTunnel traffic closely resembles regular HTTPS traffic, making
-it resistant to detection and blocking by network intermediaries.
+The TrustTunnel protocol tunnels network traffic through standard HTTP/2 and
+HTTP/3 (QUIC) connections. Because it uses common web protocols, its traffic
+resembles regular HTTPS traffic.
 
-This document provides a complete specification of the TrustTunnel protocol,
-enabling independent implementations that are interoperable with existing
-TrustTunnel clients and endpoints.
+This document specifies the protocol so that independent implementations can
+interoperate with existing clients and endpoints.
 
 ---
 
@@ -41,7 +45,7 @@ TrustTunnel clients and endpoints.
 
 ### 1.1 Purpose
 
-TrustTunnel provides a mechanism for tunneling arbitrary network traffic (TCP,
+The protocol provides a mechanism for tunneling arbitrary network traffic (TCP,
 UDP, and ICMP) through encrypted HTTP/2 or HTTP/3 connections. The protocol is
 designed with the following goals:
 
@@ -56,8 +60,8 @@ transport session
 
 | Term           | Definition                                                           |
 |----------------|----------------------------------------------------------------------|
-| **Client**     | The TrustTunnel client application that initiates connections        |
-| **Endpoint**   | The TrustTunnel server that terminates tunneled connections          |
+| **Client**     | The client application that initiates connections                    |
+| **Endpoint**   | The server that terminates tunneled connections                      |
 | **Session**    | An HTTP/2 or HTTP/3 connection between client and endpoint           |
 | **Stream**     | An individual HTTP stream within a session                           |
 | **Connection** | A tunneled TCP, UDP, or ICMP flow                                    |
@@ -76,7 +80,7 @@ transport session
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                        TrustTunnel Client                       │
+│                             Client                              │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────-┐  ┌─────────────────────────┐ │
 │  │ TCP Streams │  │ UDP Stream   │  │ ICMP Stream             │ │
@@ -114,13 +118,13 @@ transport session
 │  │ (per-conn)  │  │ (multiplexed)│  │ (multiplexed)           │ │
 │  └─────────────┘  └─────────────-┘  └─────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
-│                       TrustTunnel Endpoint                      │
+│                            Endpoint                             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Connection Model
 
-TrustTunnel uses different strategies for different protocols:
+The protocol uses different strategies for different protocols:
 
 - **TCP**: Each TCP connection uses a dedicated HTTP stream via the CONNECT
   method
@@ -426,7 +430,7 @@ proxy-authorization: Basic <base64(username:password)>
 
 ### 9.1 Basic Authentication
 
-TrustTunnel uses HTTP Basic Authentication:
+The protocol uses HTTP Basic Authentication:
 
 ```text
 proxy-authorization: Basic <credentials>
@@ -542,7 +546,7 @@ The `:authority` header uses these formats:
 
 ### 12.3 Traffic Analysis Resistance
 
-TrustTunnel provides some resistance to traffic analysis:
+The protocol provides some resistance to traffic analysis:
 
 - Traffic appears as standard HTTPS
 - Multiple connections are multiplexed

@@ -1,6 +1,6 @@
 'blank_issues_enabled': true
 'contact_links':
   - 'about': >
-        Please check TrustTunnel endpoint README for more useful information about our product
+        Please check the CatTunnel server README first
     'name': 'README'
-    'url': 'https://github.com/TrustTunnel/TrustTunnel/blob/master/README.md'
+    'url': 'https://github.com/Cattunnel/cattunnel-server/blob/main/README.md'

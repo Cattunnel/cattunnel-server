@@ -1,6 +1,6 @@
-# TrustTunnel Endpoint Binary
+# Endpoint binary (`trusttunnel_endpoint`)
 
-A standalone application that allows any user to easily set up their own VPN server.
+The VPN server application of CatTunnel server. The binary name is kept from upstream.
 
 ---
 
@@ -23,7 +23,7 @@ A standalone application that allows any user to easily set up their own VPN ser
 
 - **Setup Wizard Tool:** A setup wizard tool is provided within the repository, located in a
   separate directory. This tool simplifies the process of generating the required settings and files
-  mentioned above. Refer to the [usage instructions](../README.md#usage) for quick setup
+  mentioned above. Refer to the [install instructions](../README.md#install-and-run) for quick setup
   instructions.
 
 - **Command Line Configuration:** The VPN endpoint binary supports additional configuration options

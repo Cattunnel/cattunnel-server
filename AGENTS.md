@@ -1,14 +1,13 @@
-# Agent Guide for Trusttunnel Repository
+# Agent Guide for the CatTunnel server repository
 
-This document provides context and instructions for AI agents working on the `Trusttunnel` codebase.
+This document provides context and instructions for AI agents working on this codebase.
 
 ## Project Overview
 
-TrustTunnel is an open-source VPN protocol endpoint originally developed by
-AdGuard. It provides fast, secure, and reliable VPN connections whose
-traffic is indistinguishable from regular HTTPS. The endpoint supports
-HTTP/1.1, HTTP/2, and QUIC transports, and can tunnel TCP, UDP, and ICMP
-traffic.
+CatTunnel server is a fork of the TrustTunnel VPN endpoint originally developed
+by AdGuard. The endpoint supports HTTP/1.1, HTTP/2, and QUIC transports, can
+tunnel TCP, UDP, and ICMP traffic, and adds the NineLives transport
+(`docs/xhttp-protocol.md`). Binary and crate names are kept from upstream.
 
 ## Technical Context
 
@@ -45,10 +44,9 @@ vpn-libs-endpoint/
 ├── bench/                     # Benchmarking scripts and Docker setup
 ├── scripts/                   # Automation scripts
 │   ├── hooks/pre-commit       # Git pre-commit hook (lint + test)
-│   ├── install.sh             # Release installation script
+│   ├── install.sh             # Stub: prints how to build from source and exits 1
 │   └── trusttunnel.service.template  # systemd service template
-├── bamboo-specs/              # Bamboo CI pipeline definitions
-├── .github/workflows/         # GitHub Actions (test, md-lint, security-audit, bench)
+├── .github/workflows/         # GitHub Actions (test, md-lint, rust-lint, security-audit)
 ├── Dockerfile                 # Multi-stage Docker build
 ├── docker-entrypoint.sh       # Container entrypoint script
 ├── Makefile                   # Development task runner

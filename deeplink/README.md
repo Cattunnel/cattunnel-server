@@ -1,10 +1,10 @@
-# TrustTunnel Deep-Link Library
+# Deep-link library (`trusttunnel-deeplink` crate)
 
-A standalone Rust library for encoding and decoding TrustTunnel configuration deep-links using the `tt` URI scheme.
+A standalone Rust library for encoding and decoding endpoint configuration deep links using the `tt` URI scheme. The crate name is kept from upstream.
 
 ## Features
 
-- **Complete TLV encoding/decoding** - Implements the full [TrustTunnel deep-link specification](../DEEP_LINK.md)
+- **TLV encoding/decoding** - Implements the base tags `0x00`..`0x0F` of the [deep-link specification](../DEEP_LINK.md); the CatTunnel extension tags are skipped
 - **Error handling** - Comprehensive error types with helpful messages
 - **Base64url encoding** - URL-safe, compact representation
 - **Certificate support** - PEM/DER conversion utilities
@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-trusttunnel-deeplink = { git = "https://github.com/TrustTunnel/TrustTunnel/" }
+trusttunnel-deeplink = { git = "https://github.com/Cattunnel/cattunnel-server" }
 ```
 
 ## Quick Start
