@@ -408,3 +408,82 @@ fn make_socks_server_harness() -> (SocketAddr, impl Future<Output = Vec<u8>>) {
 
     (server_addr, task)
 }
+
+/// An address from the decoy-only list gets the answer for wrong credentials
+/// even when its credentials are valid.
+#[tokio::test]
+async fn decoy_only_address_fails_with_valid_credentials() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("decoy-only.txt");
+    std::fs::write(&list, "# probers\n127.0.0.1\n").unwrap();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let status = do_connect_request(&endpoint_address, Some("a:b".into())).await;
+        assert_eq!(status, http::StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+    };
+
+    tokio::select! {
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap()) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+/// Addresses outside the decoy-only list keep working.
+#[tokio::test]
+async fn decoy_only_list_does_not_touch_other_addresses() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("decoy-only.txt");
+    std::fs::write(&list, "203.0.113.7\n198.51.100.0/24\n").unwrap();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let status = do_connect_request(&endpoint_address, Some("a:b".into())).await;
+        assert_ne!(status, http::StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+    };
+
+    tokio::select! {
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap()) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+async fn run_endpoint_with_decoy_list(listen_address: &SocketAddr, decoy_list: &str) {
+    let settings = Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            ..Default::default()
+        })
+        .allow_private_network_connections(true)
+        .clients(vec![authentication::registry_based::Client {
+            username: "a".into(),
+            password: "b".into(),
+            max_http2_conns: None,
+            max_http3_conns: None,
+        }])
+        .decoy_only_ips_file(decoy_list)
+        .build()
+        .unwrap();
+
+    let cert_key_file = common::make_cert_key_file();
+    let cert_key_path = cert_key_file.path.to_str().unwrap();
+    let hosts_settings = TlsHostsSettings::builder()
+        .main_hosts(vec![TlsHostInfo {
+            hostname: common::MAIN_DOMAIN_NAME.to_string(),
+            cert_chain_path: cert_key_path.to_string(),
+            private_key_path: cert_key_path.to_string(),
+            allowed_sni: vec![],
+        }])
+        .build()
+        .unwrap();
+
+    common::run_endpoint_with_settings(settings, hosts_settings).await;
+}

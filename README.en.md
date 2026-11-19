@@ -74,6 +74,11 @@ Short list. The server side of each feature, with the config keys, is in
   listener parses it, so the client may split it. Input that is not TLS is rejected at once.
 - **Decoy site.** HTTP/1.1 keep-alive, chunked bodies and trailers pass through correctly,
   chunk size lines and trailers are limited, HTTP/2 is allowed on reverse proxy hosts.
+- **Decoy-only addresses.** The file named by `decoy_only_ips_file` (addresses and networks,
+  one per line, `#` comments) is re-read when it changes. A client from a listed address gets
+  the same answer as for a wrong password on every VPN request (`CONNECT`, NineLives,
+  subscription), while the decoy site works for it as for everyone else. An outside script
+  fills the list, for example from an ipset of hosts that knocked on closed ports.
 - **Metrics.** JA4 fingerprints of incoming ClientHellos are counted, and the NineLives
   memory budget is exported (`xhttp_reserved_bytes`, `xhttp_memory_rejections_total`).
 
@@ -157,6 +162,7 @@ Keys added or used by this fork:
 | `vpn.toml` | `xhttp_unacked_limit` | `1048576` | Unacknowledged bytes per session |
 | `vpn.toml` | `xhttp_supported_versions` | `[1]` | Only protocol 1 exists |
 | `vpn.toml` | `transport_mode` | `"xhttp"` | NineLives listener mode; other values are reserved |
+| `vpn.toml` | `decoy_only_ips_file` | none | File of addresses that get the wrong-password answer on VPN requests |
 | `hosts.toml` | `allowed_sni` | `[]` | Extra names accepted for a main host |
 | `rules.toml` | `client_random_auth_key` | none | Hex key for `client_random` checks |
 

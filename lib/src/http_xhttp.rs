@@ -1084,8 +1084,13 @@ pub(crate) async fn handle_request(
         }
     };
 
-    let Some(owner) = session_owner(context.authenticator.as_ref(), auth_source.as_ref(), &id)
-    else {
+    let decoy_only = context.is_decoy_only(request.client_address().ok());
+    let owner = if decoy_only {
+        None
+    } else {
+        session_owner(context.authenticator.as_ref(), auth_source.as_ref(), &id)
+    };
+    let Some(owner) = owner else {
         log_id!(debug, id, "XHTTP: authentication failed");
         let _ = respond.send_bad_response(
             context

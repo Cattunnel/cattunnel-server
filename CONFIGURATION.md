@@ -286,6 +286,7 @@ action = "deny"
 | `udp_connections_timeout_secs`          | Integer | `300`         | UDP connection timeout (5 minutes)                               |
 | `credentials_file`                      | String  | -             | Path to credentials file                                         |
 | `rules_file`                            | String  | -             | Path to rules file (optional)                                    |
+| `decoy_only_ips_file`                   | String  | -             | Path to a list of client IPs/CIDRs (one per line) whose VPN requests always fail as unauthenticated; the decoy site stays available. Re-read when the file changes |
 | `speedtest_enable`                      | Boolean | `false`       | Enable speedtest handler on main hosts                           |
 | `ping_enable`                           | Boolean | `false`       | Enable ping handler on main hosts                                |
 | `ping_path`                             | String  | -             | Optional path prefix for ping on main hosts                      |

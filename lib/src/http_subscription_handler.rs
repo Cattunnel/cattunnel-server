@@ -97,7 +97,12 @@ async fn handle_stream(
         return Ok(());
     }
 
-    let Some(client) = authenticate(&context, &req.headers) else {
+    let client = if context.is_decoy_only(request.client_address().ok()) {
+        None
+    } else {
+        authenticate(&context, &req.headers)
+    };
+    let Some(client) = client else {
         respond.send_bad_response(
             StatusCode::UNAUTHORIZED,
             vec![(

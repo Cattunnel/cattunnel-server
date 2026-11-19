@@ -8,6 +8,12 @@ come first; the upstream history before the fork is kept below it.
 
 ## [Unreleased]
 
+### Added
+
+- `decoy_only_ips_file` in `vpn.toml`: a file of client addresses and networks, re-read when
+  it changes. VPN requests from these addresses (`CONNECT`, NineLives, subscription, SNI
+  authentication) fail as with a wrong password; the decoy site still answers them.
+
 ### Removed
 
 - Upstream CI and release tooling that targets the upstream organisation: `bamboo-specs/`,

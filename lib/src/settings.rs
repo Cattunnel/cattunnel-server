@@ -202,6 +202,14 @@ pub struct Settings {
     #[serde(rename(deserialize = "rules_file"))]
     #[serde(deserialize_with = "deserialize_rules")]
     pub(crate) rules_engine: Option<rules::RulesEngine>,
+    /// Path to the list of client addresses that only see the decoy site:
+    /// one IP address or CIDR network per line. Every VPN request from such an
+    /// address (CONNECT, NineLives, subscription) is answered as a failed
+    /// authentication, even with valid credentials, while other requests go to
+    /// the reverse proxy as usual. The file is re-read when it changes; a
+    /// missing file means an empty list.
+    #[serde(default)]
+    pub(crate) decoy_only_ips_file: Option<String>,
 
     /// Whether speedtest is available on the main hosts.
     #[serde(default = "Settings::default_speedtest_enable")]
@@ -806,6 +814,7 @@ impl Default for Settings {
             icmp: None,
             metrics: Default::default(),
             rules_engine: Some(rules::RulesEngine::default_allow()),
+            decoy_only_ips_file: None,
             speedtest_enable: false,
             ping_enable: Settings::default_ping_enable(),
             ping_path: None,
@@ -1081,6 +1090,7 @@ impl SettingsBuilder {
                 icmp: None,
                 metrics: Default::default(),
                 rules_engine: Some(rules::RulesEngine::default_allow()),
+                decoy_only_ips_file: None,
                 speedtest_enable: Settings::default_speedtest_enable(),
                 ping_enable: Settings::default_ping_enable(),
                 ping_path: Settings::default_ping_path(),
@@ -1148,6 +1158,12 @@ impl SettingsBuilder {
     /// Allow/disallow connections to private network of the endpoint
     pub fn allow_private_network_connections(mut self, v: bool) -> Self {
         self.settings.allow_private_network_connections = v;
+        self
+    }
+
+    /// Set the path of the decoy-only address list
+    pub fn decoy_only_ips_file(mut self, path: impl Into<String>) -> Self {
+        self.settings.decoy_only_ips_file = Some(path.into());
         self
     }
 

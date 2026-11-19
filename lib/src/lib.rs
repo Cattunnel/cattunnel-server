@@ -19,6 +19,7 @@ pub mod utils;
 
 mod connection_limiter;
 mod datagram_pipe;
+mod decoy_list;
 mod direct_forwarder;
 mod downstream;
 mod forwarder;

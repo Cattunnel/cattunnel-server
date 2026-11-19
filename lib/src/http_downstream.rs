@@ -125,6 +125,26 @@ impl Downstream for HttpDownstream {
                     };
                     let auth_failure_status_code = StatusCode::from_u16(effective_code)
                         .unwrap_or(StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+                    if self
+                        .context
+                        .is_decoy_only(stream.request().client_address().ok())
+                    {
+                        // The same answer as for wrong credentials: the address
+                        // probed a closed port and may only see the decoy site.
+                        log_id!(
+                            debug,
+                            stream_id,
+                            "Decoy-only client, tunnel request refused"
+                        );
+                        fail_request_with_error(
+                            stream,
+                            tunnel::ConnectionError::Authentication(
+                                "Authentication failed".to_string(),
+                            ),
+                            auth_failure_status_code,
+                        );
+                        continue;
+                    }
                     return Ok(Some(Box::new(PendingRequest {
                         stream,
                         id: stream_id,

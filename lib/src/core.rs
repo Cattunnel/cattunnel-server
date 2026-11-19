@@ -87,9 +87,19 @@ pub(crate) struct Context {
     pub connection_limiter: Option<Arc<ConnectionLimiter>>,
     /// The registry of the XHTTP sessions waiting for their pair
     pub xhttp: Arc<crate::http_xhttp::XhttpRegistry>,
+    /// Client addresses that only see the decoy site
+    pub(crate) decoy_list: Option<Arc<crate::decoy_list::DecoyList>>,
 }
 
 impl Context {
+    /// Whether every VPN request from `ip` must fail as unauthenticated.
+    pub(crate) fn is_decoy_only(&self, ip: Option<std::net::IpAddr>) -> bool {
+        match (self.decoy_list.as_ref(), ip) {
+            (Some(list), Some(ip)) => list.contains(ip),
+            _ => false,
+        }
+    }
+
     pub(crate) fn report_fatal_io_error(&self, e: &io::Error) {
         let _ = self.fatal_error.send(Some(FatalIoError::from_io_error(e)));
     }
@@ -145,6 +155,10 @@ impl Core {
             ),
             None => None,
         };
+        let decoy_list = settings
+            .decoy_only_ips_file
+            .as_ref()
+            .map(|path| Arc::new(crate::decoy_list::DecoyList::new(path)));
         let per_client_metrics = settings
             .metrics
             .as_ref()
@@ -173,6 +187,7 @@ impl Core {
                 next_tunnel_id: Default::default(),
                 connection_limiter,
                 xhttp: Arc::new(crate::http_xhttp::XhttpRegistry::new()),
+                decoy_list,
             }),
         })
     }
@@ -549,6 +564,7 @@ impl Core {
                     tls_connection_meta.sni,
                     tls_connection_meta.sni_auth_creds,
                     tunnel_id,
+                    context.is_decoy_only(Some(client_ip)),
                 )
                 .await
             }
@@ -661,6 +677,7 @@ impl Core {
                 let sni_auth_creds = tls_connection_meta.sni_auth_creds.clone();
                 let conn_key = tunnel_id.to_string();
                 context.metrics.register_connection(conn_key, client_ip);
+                let decoy_only = context.is_decoy_only(client_ip);
                 Self::on_tunnel_request(
                     context,
                     tls_connection_meta.protocol,
@@ -668,6 +685,7 @@ impl Core {
                     sni,
                     sni_auth_creds,
                     tunnel_id,
+                    decoy_only,
                 )
                 .await
             }
@@ -751,6 +769,7 @@ impl Core {
         server_name: String,
         sni_auth_creds: Option<String>,
         tunnel_id: log_utils::IdChain<u64>,
+        decoy_only: bool,
     ) {
         // Resolve the username for SNI credentials (if any) so the session counter
         // is labelled correctly from the start.
@@ -772,7 +791,12 @@ impl Core {
                 None => (tunnel::AuthenticationPolicy::Default, None),
                 Some((authenticator, credentials)) => {
                     let auth = authentication::Source::Sni(credentials.into());
-                    match authenticator.authenticate(&auth, &tunnel_id) {
+                    let status = if decoy_only {
+                        authentication::Status::Reject
+                    } else {
+                        authenticator.authenticate(&auth, &tunnel_id)
+                    };
+                    match status {
                         authentication::Status::Pass => {
                             let guard = context.connection_limiter.as_ref().and_then(|limiter| {
                                 let creds = match &auth {
@@ -864,6 +888,7 @@ impl Default for Context {
             next_tunnel_id: Default::default(),
             connection_limiter: None,
             xhttp: Arc::new(crate::http_xhttp::XhttpRegistry::new()),
+            decoy_list: None,
         }
     }
 }
