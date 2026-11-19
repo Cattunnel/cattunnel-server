@@ -1,49 +1,36 @@
-# CatTunnel features: the server side
+# Возможности CatTunnel: что нужно от сервера
 
-This page lists what each CatTunnel feature needs from the server and which keys control it.
-Key names are literal identifiers in `vpn.toml`, `hosts.toml` and `rules.toml`.
+[English](features.en.md)
 
-- [NineLives transport](#ninelives-transport)
-- [CONNECT answer](#connect-answer)
-- [ClientHello split across TLS records](#clienthello-split-across-tls-records)
-- [Several server names (SNI rotation)](#several-server-names-sni-rotation)
-- [TLS authorization key in client\_random](#tls-authorization-key-in-client_random)
-- [Decoy site](#decoy-site)
-- [Subscriptions](#subscriptions)
-- [Metrics](#metrics)
-- [Client-side features](#client-side-features)
+Здесь по каждой возможности CatTunnel: что она требует от сервера и какими ключами управляется. Имена ключей написаны так, как они пишутся в `vpn.toml`, `hosts.toml` и `rules.toml`.
 
-## NineLives transport
+- [Транспорт NineLives](#транспорт-ninelives)
+- [Ответ на CONNECT](#ответ-на-connect)
+- [ClientHello в нескольких TLS-записях](#clienthello-в-нескольких-tls-записях)
+- [Несколько имён сервера (ротация SNI)](#несколько-имён-сервера-ротация-sni)
+- [Ключ TLS-авторизации в client\_random](#ключ-tls-авторизации-в-client_random)
+- [Сайт-приманка](#сайт-приманка)
+- [Подписки](#подписки)
+- [Метрики](#метрики)
+- [Возможности клиента](#возможности-клиента)
 
-A second transport next to `CONNECT`, enabled with `xhttp_enable = true`. Overview, keys and
-key generation: [ninelives.md](ninelives.md). Wire format: [xhttp-protocol.md](xhttp-protocol.md).
+## Транспорт NineLives
 
-## CONNECT answer
+Второй транспорт рядом с `CONNECT`, включается `xhttp_enable = true`. Как устроен, ключи и создание ключа: [ninelives.md](ninelives.md). Формат на проводе: [xhttp-protocol.md](xhttp-protocol.md).
 
-Upstream answered a successful `CONNECT` with a bare `200` status. This fork adds the headers
-a web server would send: `date`, `server`, `cache-control: no-cache, no-store,
-must-revalidate`, and `x-request-id` and `x-trace-id` with random hex values of random
-length, so the answer does not have a constant size. As RFC 9110 (9.3.6) requires, the answer
-has neither `content-length` nor `transfer-encoding`. There is no setting; the change is in
-`lib/src/http_codec.rs`.
+## Ответ на CONNECT
 
-## ClientHello split across TLS records
+Апстрим отвечал на удачный `CONNECT` голым статусом `200`. Форк добавляет заголовки, которые прислал бы обычный веб-сервер: `date`, `server`, `cache-control: no-cache, no-store, must-revalidate`, а также `x-request-id` и `x-trace-id` со случайными hex-значениями случайной длины, поэтому размер ответа не постоянный. Как требует RFC 9110 (9.3.6), в ответе нет ни `content-length`, ни `transfer-encoding`. Настройки нет, изменение в `lib/src/http_codec.rs`.
 
-Before the TLS library sees a connection, the listener reads the first record itself to get
-the SNI and the `client_random` for the rules. Upstream refused a connection whose ClientHello
-did not fit into the first record. This fork joins a ClientHello split across several TLS
-records before parsing it, so a client may split the ClientHello into records as an anti-DPI
-measure. TLS allows such a split, and the TLS library accepts it. Input that is not TLS at
-all is rejected at once instead of waiting for the handshake timeout. There is no setting.
+## ClientHello в нескольких TLS-записях
 
-The CatTunnel client does not use the record split today; its anti-DPI modes split the
-ClientHello into TCP segments and keep it in one TLS record, which any server accepts.
+Прежде чем соединение увидит TLS-библиотека, приёмник сам читает первую запись, чтобы достать SNI и `client_random` для правил. Апстрим отказывал, если ClientHello не помещался в первую запись. Форк собирает ClientHello из нескольких TLS-записей и только потом разбирает, так что клиент может разбивать ClientHello на записи ради обхода DPI. TLS такое разбиение допускает, TLS-библиотека его принимает. Данные, которые вовсе не TLS, отбрасываются сразу, без ожидания таймаута рукопожатия. Настройки нет.
 
-## Several server names (SNI rotation)
+Клиент CatTunnel сейчас на записи не разбивает: его режимы анти-DPI режут ClientHello на TCP-сегменты, а TLS-запись оставляют одной, это примет любой сервер.
 
-The server name in the TLS ClientHello is visible to an observer. A subscription service can
-give different users different names of the same server, or change a name over time, so that
-the users of one server do not all share one name. The server only has to accept every name:
+## Несколько имён сервера (ротация SNI)
+
+Имя сервера в TLS ClientHello видно наблюдателю. Сервис подписок может выдавать разным пользователям разные имена одного сервера или менять имя со временем, чтобы все пользователи сервера не ходили под одним именем. Серверу нужно только принимать каждое из имён:
 
 ```toml
 # hosts.toml
@@ -54,86 +41,47 @@ private_key_path = "certs/key.pem"
 allowed_sni = ["cdn.example.com", "static.example.com"]
 ```
 
-A connection with one of the `allowed_sni` names is served by this main host with its
-certificate, so the certificate must cover all names (a wildcard or several SANs). Otherwise a
-client that checks the certificate, as the CatTunnel client does, refuses the connection. The
-decoy site keeps working on every name. A new name needs no rebuild; `hosts.toml` is
-reloaded on `SIGHUP`.
+Соединение с одним из имён `allowed_sni` обслуживает этот основной хост своим сертификатом, поэтому сертификат должен покрывать все имена (wildcard или несколько SAN). Иначе клиент, который проверяет сертификат (как клиент CatTunnel), откажется от соединения. Сайт-приманка работает на всех именах. Новое имя не требует пересборки: `hosts.toml` перечитывается по `SIGHUP`.
 
-Which user gets which name is decided by the service that writes the `tt://` links (tag
-`0x03`, custom SNI). This repository does not contain such a service. A second name does not
-help against a block of the server address and port; it only spreads a visible field.
+Какому пользователю какое имя, решает сервис, который пишет ссылки `tt://` (тег `0x03`, своё SNI). В этом репозитории такого сервиса нет. От блокировки адреса и порта сервера второе имя не спасает, оно только разносит видимое поле.
 
-## TLS authorization key in client\_random
+## Ключ TLS-авторизации в client_random
 
-`rules.toml` can allow connections by a fixed prefix of the TLS `client_random`. A fixed
-prefix makes the start of a random field constant in every connection of a user, so an
-observer can link these connections. The upstream `client_random_auth_key` replaces it: the
-client derives part of `client_random` from the key, the SNI and fresh random bytes
-(HKDF-SHA256 and AES-128), and the server checks it. For an observer the field stays random.
+`rules.toml` умеет пускать по фиксированному префиксу TLS `client_random`. Фиксированный префикс делает начало случайного поля одинаковым во всех соединениях пользователя, и наблюдатель может эти соединения связать. Ключ `client_random_auth_key` из апстрима заменяет префикс: клиент выводит часть `client_random` из ключа, SNI и свежих случайных байтов (HKDF-SHA256 и AES-128), а сервер это проверяет. Для наблюдателя поле остаётся случайным.
 
 ```toml
 # rules.toml
 [[rule]]
-client_random_auth_key = "<32 hex characters>"
+client_random_auth_key = "<32 hex-символа>"
 action = "allow"
 ```
 
-Rules that only allow, with no deny rule at the end, keep the decoy site for clients without
-a matching value (scanners, browsers); the tunnel itself is still protected by login and
-password. A final deny rule would cut such clients off at the TLS level and make the server
-easier to spot. Reference: [CONFIGURATION.md](../CONFIGURATION.md#rules-reference).
+Если правила только разрешают и в конце нет запрещающего, клиенты без подходящего значения (сканеры, браузеры) видят сайт-приманку, а сам туннель всё равно закрыт логином и паролем. Запрещающее правило в конце отрезало бы таких клиентов на уровне TLS, и сервер стало бы проще заметить. Справочник: [CONFIGURATION.md](../CONFIGURATION.md#rules-reference) (на английском).
 
-## Decoy site
+## Сайт-приманка
 
-Connections without valid credentials, and requests whose path matches `path_mask`, go to the
-reverse proxy (`[reverse_proxy]` in `vpn.toml`, `reverse_proxy_hosts` in `hosts.toml`).
-This fork fixes how HTTP/1.1 traffic passes through it: keep-alive connections serve the next
-request, chunked bodies keep their framing and trailers, the request body is sent while the
-response is awaited, and chunk size lines and trailers have size limits. HTTP/2 is allowed on
-reverse proxy hosts.
+Соединения без верного логина и запросы, путь которых совпал с `path_mask`, уходят в обратный прокси (`[reverse_proxy]` в `vpn.toml`, `reverse_proxy_hosts` в `hosts.toml`). Форк исправляет прохождение через него трафика HTTP/1.1: keep-alive соединения обслуживают следующий запрос, тела частями (chunked) сохраняют разбиение и трейлеры, тело запроса отправляется, пока ждётся ответ, у строк размера и трейлеров есть предел длины. На хостах обратного прокси разрешён HTTP/2.
 
-## Subscriptions
+## Подписки
 
-There are two different things called a subscription.
+Подпиской называют две разные вещи.
 
-- **Endpoint subscription (upstream).** With `[subscription]` in `vpn.toml` the endpoint
-  serves each user a JSON configuration over HTTPS with HTTP Basic Auth. See
-  [CONFIGURATION.md](../CONFIGURATION.md#subscription-settings).
-- **CatTunnel subscription.** The CatTunnel app and router read a list of `tt://` links, one per
-  line, optionally encrypted with age for the device key, with an optional `#mirrors` line.
-  This format is served by a separate HTTPS service, not by this endpoint. The format is
-  described in the app repository:
-  [docs/subscriptions.md](https://github.com/Cattunnel/cattunnel/blob/main/docs/subscriptions.md).
+- **Подписка сервера (апстрим).** С `[subscription]` в `vpn.toml` сервер отдаёт каждому пользователю JSON с настройками по HTTPS с HTTP Basic Auth. См. [CONFIGURATION.md](../CONFIGURATION.md#subscription-settings) (на английском).
+- **Подписка CatTunnel.** Приложение и роутер CatTunnel читают список ссылок `tt://`, по одной в строке, по желанию зашифрованный age под ключ устройства, с необязательной строкой `#mirrors`. Этот формат отдаёт отдельный HTTPS-сервис, а не этот сервер. Формат описан в репозитории приложения: [docs/subscriptions.md](https://github.com/Cattunnel/cattunnel/blob/main/docs/subscriptions.md).
 
-## Metrics
+## Метрики
 
-With `[metrics]` in `vpn.toml` the endpoint serves Prometheus metrics ([METRICS.md](../METRICS.md)).
-This fork adds:
+С `[metrics]` в `vpn.toml` сервер отдаёт метрики Prometheus ([METRICS.md](../METRICS.md), на английском). Форк добавляет:
 
-- `xhttp_reserved_bytes`: bytes reserved by NineLives buffers;
-- `xhttp_memory_rejections_total`: NineLives sessions or buffers refused by the memory budget;
-- `GET /ja4` on the metrics listener: a JSON list of `[fingerprint, count]` pairs, the JA4
-  fingerprints of incoming ClientHellos counted since the endpoint started. It shows which TLS
-  profiles the clients really send. The fingerprint of each ClientHello is also logged at
-  debug level.
+- `xhttp_reserved_bytes`: байты, занятые буферами NineLives;
+- `xhttp_memory_rejections_total`: сессии и буферы NineLives, которым бюджет памяти отказал;
+- `GET /ja4` на порту метрик: JSON-список пар `[отпечаток, количество]`, отпечатки JA4 входящих ClientHello с момента запуска сервера. По нему видно, какие TLS-профили клиенты шлют на самом деле. Отпечаток каждого ClientHello также пишется в журнал на уровне debug.
 
-## Client-side features
+## Возможности клиента
 
-These CatTunnel client features work with any endpoint that follows the protocol. The server
-needs no settings for them.
+Эти возможности клиента CatTunnel работают с любым сервером, который следует протоколу. Настраивать на сервере ничего не нужно.
 
-- **HTTP/2 padding.** The client sets the PADDED flag (RFC 9113, 6.1) on the first frames of
-  each stream and adds random bytes, within a byte budget per stream and per session. Any
-  HTTP/2 server must accept padding. Details in the app repository:
-  [docs/padding.md](https://github.com/Cattunnel/cattunnel/blob/main/docs/padding.md).
-- **Connection pool.** The client spreads its `CONNECT` streams over two to four TLS
-  connections and opens them with pauses, not in a burst. The server sees several sessions
-  of one user, which it allows by default.
-- **Anti-DPI.** The client splits the ClientHello into TCP segments, may send one byte as TCP
-  urgent data, or sends a segment with a small TTL that the network drops and the client OS
-  resends. A lone urgent byte stalls this server: the tokio reader stops at the urgent mark and
-  waits for an event that does not come. The CatTunnel client therefore always follows an
-  urgent byte with a short-TTL segment, whose retransmission wakes the reader.
-- **Browser TLS profiles.** The ClientHello imitates Chrome, Firefox or Safari. The TLS
-  library of the server accepts all of them.
+- **Паддинг HTTP/2.** Клиент ставит флаг PADDED (RFC 9113, 6.1) на первые кадры каждого потока и добавляет случайные байты в пределах бюджета на поток и на сессию. Любой сервер HTTP/2 обязан принимать паддинг. Подробно в репозитории приложения: [docs/padding.md](https://github.com/Cattunnel/cattunnel/blob/main/docs/padding.md).
+- **Пул соединений.** Клиент раскладывает потоки `CONNECT` по двум-четырём TLS-соединениям и открывает их с паузами, а не пачкой. Сервер видит несколько сессий одного пользователя, что по умолчанию разрешено.
+- **Анти-DPI.** Клиент режет ClientHello на TCP-сегменты, может отправить один байт как срочные данные TCP (urgent) или отправить сегмент с малым TTL, который сеть выбросит, а ОС клиента перешлёт. Одинокий срочный байт подвешивает этот сервер: читатель tokio останавливается на метке urgent и ждёт события, которое не приходит. Поэтому клиент CatTunnel всегда отправляет за срочным байтом сегмент с коротким TTL, повторная отправка которого будит читателя.
+- **TLS-профили браузеров.** ClientHello повторяет Chrome, Firefox или Safari. TLS-библиотека сервера принимает их все.

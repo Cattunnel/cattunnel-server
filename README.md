@@ -1,93 +1,64 @@
 # CatTunnel server
 
-CatTunnel server is the VPN endpoint used by the CatTunnel apps. It is a fork of the
-TrustTunnel endpoint (version 1.3.0-beta.2) and speaks the same protocol: TLS, then
-HTTP/2 (or HTTP/3 over QUIC), with every TCP connection of the user carried as a
-`CONNECT` stream. On top of that it adds NineLives, a second transport made of paired
-HTTP requests, plus several changes to the TLS listener, the decoy site and the
-`CONNECT` answer.
+CatTunnel server: VPN-сервер, к которому подключаются приложения CatTunnel. Это форк TrustTunnel endpoint (версия 1.3.0-beta.2), протокол тот же: TLS, поверх него HTTP/2 (или HTTP/3 по QUIC), и каждое TCP-соединение пользователя идёт отдельным потоком `CONNECT`. Форк добавляет NineLives, второй транспорт из пары HTTP-запросов, и меняет TLS-приёмник, сайт-приманку и ответ на `CONNECT`.
 
-This tree is `1.3.0-beta.2-32-ga12e73a`.
+[English](README.en.md)
 
-## CatTunnel repositories
+Это дерево: `1.3.0-beta.2-32-ga12e73a`.
 
-| Repository | What it is |
+## Репозитории CatTunnel
+
+| Репозиторий | Что это |
 | --- | --- |
-| [Cattunnel/cattunnel](https://github.com/Cattunnel/cattunnel) | Client app for Android, Windows and Linux |
-| [Cattunnel/cattunnel-router](https://github.com/Cattunnel/cattunnel-router) | Router edition for OpenWrt, Keenetic and ASUS Merlin |
-| [Cattunnel/cattunnel-server](https://github.com/Cattunnel/cattunnel-server) | Server endpoint (this repository) |
+| [Cattunnel/cattunnel](https://github.com/Cattunnel/cattunnel) | Приложение для Android, Windows и Linux |
+| [Cattunnel/cattunnel-router](https://github.com/Cattunnel/cattunnel-router) | Роутерная редакция для OpenWrt, Keenetic и ASUS Merlin |
+| [Cattunnel/cattunnel-server](https://github.com/Cattunnel/cattunnel-server) | Сервер (этот репозиторий) |
 
-## Contents
+## Содержание
 
-- [Names kept from upstream](#names-kept-from-upstream)
-- [Features](#features)
-- [Build](#build)
-- [Install and run](#install-and-run)
-- [Configuration](#configuration)
-- [Export a client configuration](#export-a-client-configuration)
+- [Имена, оставшиеся от апстрима](#имена-оставшиеся-от-апстрима)
+- [Возможности](#возможности)
+- [Сборка](#сборка)
+- [Установка и запуск](#установка-и-запуск)
+- [Настройки](#настройки)
+- [Конфигурация для клиента](#конфигурация-для-клиента)
 - [Docker](#docker)
-- [Documentation](#documentation)
-- [License](#license)
+- [Документация](#документация)
+- [Лицензия](#лицензия)
 
-## Names kept from upstream
+## Имена, оставшиеся от апстрима
 
-The binaries, crates, config files and the systemd unit keep their upstream names so that
-existing configurations, scripts and clients keep working: the endpoint binary is
-`trusttunnel_endpoint`, the library crate is `trusttunnel`, the deep-link crate is
-`trusttunnel-deeplink`, the default install directory in the examples is
-`/opt/trusttunnel` and the unit is `trusttunnel.service`. Some help texts printed by the
-binaries also still say "TrustTunnel". Wherever this documentation shows such a name, it is
-a literal identifier, not a separate product.
+Бинарники, крейты, файлы настроек и служба systemd пока называются как в апстриме, чтобы старые конфигурации, скрипты и клиенты продолжали работать: сервер `trusttunnel_endpoint`, библиотека `trusttunnel`, крейт ссылок `trusttunnel-deeplink`, каталог в примерах `/opt/trusttunnel`, служба `trusttunnel.service`. В некоторых справках бинарники ещё пишут «TrustTunnel». Такое имя в этой документации означает конкретный файл или идентификатор, а не другой продукт.
 
-## Features
+## Возможности
 
-Short list. The server side of each feature, with the config keys, is in
-[docs/features.md](docs/features.md).
+Коротко. Что каждой возможности нужно от сервера и какими ключами она включается: [docs/features.md](docs/features.md).
 
-**From upstream**
+**Из апстрима**
 
-- TCP, UDP and ICMP tunneling over HTTP/1.1, HTTP/2 and HTTP/3 (QUIC).
-- Authentication by login and password (`credentials.toml`), connection rules by client IP
-  and by the TLS `client_random` (`rules.toml`), including `client_random_auth_key`: a
-  per-connection value derived from a shared key, so the field stays random for an observer.
-- Decoy site for anyone without valid credentials (reverse proxy to a local web server).
-- Several names per TLS host (`allowed_sni`), served with that host's certificate.
-- Export of client configurations as `tt://` deep links or TOML, per-user JSON subscription
-  (`[subscription]`), Prometheus metrics, hot reload of TLS hosts on `SIGHUP`.
+- Туннель для TCP, UDP и ICMP поверх HTTP/1.1, HTTP/2 и HTTP/3 (QUIC).
+- Вход по логину и паролю (`credentials.toml`), правила подключения по IP клиента и по полю TLS `client_random` (`rules.toml`), в том числе `client_random_auth_key`: значение выводится из общего ключа заново для каждого соединения, и для наблюдателя поле остаётся случайным.
+- Сайт-приманка для всех, у кого нет верного логина (обратный прокси на локальный веб-сервер).
+- Несколько имён на один TLS-хост (`allowed_sni`) с сертификатом этого хоста.
+- Выгрузка настроек клиента ссылкой `tt://` или файлом TOML, JSON-подписка на каждого пользователя (`[subscription]`), метрики Prometheus, перечитывание TLS-хостов по `SIGHUP`.
 
-**Added in this fork**
+**Добавлено в форке**
 
-- **NineLives transport (XHTTP protocol 1).** A TCP session of the client is carried by two
-  HTTP/2 requests on the same path: a `GET` whose response body carries the download and a
-  `POST` whose request body carries the upload. Frames have offsets and acknowledgements. An
-  optional signed handshake (X25519 key exchange, Ed25519 signature by the server,
-  HKDF-SHA256, AES-128-GCM per direction) encrypts the frame stream inside TLS. A session can
-  be resumed after the connection drops (60 s by default). Buffers are limited by a global
-  memory budget. NineLives is off unless `xhttp_enable = true`. It is **not** compatible
-  with XHTTP from Xray: the name XHTTP in config keys is historical. See
-  [docs/ninelives.md](docs/ninelives.md).
-- **`CONNECT` answer.** The `200` response to `CONNECT` carries `date`, `server`,
-  `cache-control` and two random identifiers of random length, instead of a bare status line.
-- **TLS listener.** A ClientHello split across several TLS records is joined before the
-  listener parses it, so the client may split it. Input that is not TLS is rejected at once.
-- **Decoy site.** HTTP/1.1 keep-alive, chunked bodies and trailers pass through correctly,
-  chunk size lines and trailers are limited, HTTP/2 is allowed on reverse proxy hosts.
-- **Metrics.** JA4 fingerprints of incoming ClientHellos are counted, and the NineLives
-  memory budget is exported (`xhttp_reserved_bytes`, `xhttp_memory_rejections_total`).
+- **Транспорт NineLives (XHTTP, протокол 1).** TCP-сессия клиента идёт двумя HTTP/2-запросами на один путь: `GET`, в теле ответа которого идёт загрузка, и `POST`, в теле запроса которого идёт отдача. У кадров есть смещения и подтверждения. Необязательное подписанное рукопожатие (обмен ключами X25519, подпись сервера Ed25519, HKDF-SHA256, AES-128-GCM на каждое направление) шифрует поток кадров внутри TLS. После обрыва сессию можно продолжить (по умолчанию в течение 60 с). Буферы ограничены общим бюджетом памяти. Без `xhttp_enable = true` NineLives выключен. С XHTTP из Xray он **не совместим**, слово XHTTP в ключах осталось по истории. Подробно: [docs/ninelives.md](docs/ninelives.md).
+- **Ответ на `CONNECT`.** Ответ `200` несёт `date`, `server`, `cache-control` и два случайных идентификатора случайной длины, а не голую строку статуса.
+- **TLS-приёмник.** ClientHello, разбитый на несколько TLS-записей, собирается до разбора, так что клиент может его разбивать. Не-TLS отбрасывается сразу.
+- **Сайт-приманка.** Правильно проходят keep-alive HTTP/1.1, тела частями (chunked) и трейлеры, длина строк размера и трейлеров ограничена, на хостах обратного прокси разрешён HTTP/2.
+- **Метрики.** Считаются отпечатки JA4 входящих ClientHello, выгружается бюджет памяти NineLives (`xhttp_reserved_bytes`, `xhttp_memory_rejections_total`).
 
-**Client-side features that need nothing on the server**
+**Возможности клиента, которым от сервера ничего не нужно**
 
-HTTP/2 padding, the client connection pool, browser TLS profiles and the anti-DPI modes of
-the CatTunnel client work with this server and with an unmodified upstream endpoint. The
-server only has to accept standard HTTP/2 padding and several TLS connections per client,
-which it does. Details: [docs/features.md](docs/features.md#client-side-features).
+Паддинг HTTP/2, пул соединений, TLS-профили браузеров и режимы анти-DPI клиента CatTunnel работают и с этим сервером, и с немодифицированным апстримом. Серверу достаточно принимать стандартный паддинг HTTP/2 и несколько TLS-соединений от одного клиента, что он и делает. Подробно: [docs/features.md](docs/features.md#возможности-клиента).
 
-## Build
+## Сборка
 
-There are no prebuilt binaries in this README. Build from source.
+Готовых бинарников нет, собирайте из исходников.
 
-Requirements (see [DEVELOPMENT.md](DEVELOPMENT.md)): Rust 1.95 (pinned in
-`rust-toolchain.toml`), CMake, libclang and a C++ compiler. Linux and macOS are supported.
+Нужно (см. [DEVELOPMENT.md](DEVELOPMENT.md)): Rust 1.95 (зафиксирован в `rust-toolchain.toml`), CMake, libclang и компилятор C++. Поддерживаются Linux и macOS.
 
 ```shell
 git clone https://github.com/Cattunnel/cattunnel-server.git
@@ -95,15 +66,13 @@ cd cattunnel-server
 cargo build --bins --release
 ```
 
-The binaries are `target/release/trusttunnel_endpoint` and `target/release/setup_wizard`.
-The same through the Makefile: `make endpoint/build` and `make endpoint/build-wizard`.
+Получатся `target/release/trusttunnel_endpoint` и `target/release/setup_wizard`. То же через Makefile: `make endpoint/build` и `make endpoint/build-wizard`.
 
-Tests and linters: `make test`, `make lint` (needs `markdownlint-cli`, rustfmt and clippy).
+Тесты и линтеры: `make test`, `make lint` (нужны `markdownlint-cli`, rustfmt и clippy).
 
-## Install and run
+## Установка и запуск
 
-Copy the two binaries and the service template to one directory, for example
-`/opt/trusttunnel`:
+Скопируйте оба бинарника и шаблон службы в один каталог, например `/opt/trusttunnel`:
 
 ```shell
 sudo mkdir -p /opt/trusttunnel
@@ -111,19 +80,16 @@ sudo cp target/release/trusttunnel_endpoint target/release/setup_wizard /opt/tru
 sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
 ```
 
-Generate the configuration with the wizard. It asks for the listen address, users, rules,
-and the certificate (Let's Encrypt, self-signed, or existing files):
+Создайте настройки мастером. Он спросит адрес, пользователей, правила и сертификат (Let's Encrypt, самоподписанный или готовые файлы):
 
 ```shell
 cd /opt/trusttunnel
 sudo ./setup_wizard
 ```
 
-`sudo` is needed to manage TLS certificates. `./setup_wizard -h` lists the
-non-interactive options. Certificate renewal with Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
+`sudo` нужен для работы с сертификатами. `./setup_wizard -h` покажет параметры для запуска без вопросов. Продление сертификата через Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
 
-Run it as a systemd service. The template assumes the binary and the config files are in
-`/opt/trusttunnel` with the default names; edit it if your paths differ:
+Запуск службой systemd. Шаблон рассчитан на бинарник и файлы настроек в `/opt/trusttunnel` с именами по умолчанию; если пути другие, поправьте его:
 
 ```shell
 sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/trusttunnel.service
@@ -131,90 +97,71 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 ```
 
-To update, build the new revision, stop the service, replace the binaries and start it again.
+Обновление: соберите новую ревизию, остановите службу, замените бинарники и запустите снова.
 
-`scripts/install.sh` from upstream downloaded upstream release archives. In this fork it only
-prints a message and exits with an error, so that nobody installs upstream binaries by
-accident.
+`scripts/install.sh` в апстриме скачивал архивы апстрима. В форке он только печатает сообщение и завершается с ошибкой, чтобы никто случайно не поставил чужие бинарники.
 
-## Configuration
+## Настройки
 
-The endpoint reads TOML files: `vpn.toml` (main settings), `hosts.toml` (TLS hosts),
-`credentials.toml` (users) and optionally `rules.toml` (connection rules). Full reference:
-[CONFIGURATION.md](CONFIGURATION.md).
+Сервер читает файлы TOML: `vpn.toml` (основные настройки), `hosts.toml` (TLS-хосты), `credentials.toml` (пользователи) и, если нужно, `rules.toml` (правила подключения). Полный справочник: [CONFIGURATION.md](CONFIGURATION.md) (на английском).
 
-Keys added or used by this fork:
+Ключи, которые добавил или использует форк:
 
-| File | Key | Default | Meaning |
+| Файл | Ключ | По умолчанию | Что делает |
 | --- | --- | --- | --- |
-| `vpn.toml` | `xhttp_enable` | `false` | Turn NineLives on |
-| `vpn.toml` | `xhttp_path` | `"/api/v2/"` | Path prefix of NineLives requests |
-| `vpn.toml` | `xhttp_secret_key` | none | Base64 Ed25519 seed (32 bytes) that signs the NineLives handshake |
-| `vpn.toml` | `xhttp_resume_timeout` | `60` | Seconds a session is kept for resume; `0` turns resume off |
-| `vpn.toml` | `xhttp_memory_limit` | 1/4 of RAM, 64..512 MiB | Global budget for NineLives buffers, bytes |
-| `vpn.toml` | `xhttp_unacked_limit` | `1048576` | Unacknowledged bytes per session |
-| `vpn.toml` | `xhttp_supported_versions` | `[1]` | Only protocol 1 exists |
-| `vpn.toml` | `transport_mode` | `"xhttp"` | NineLives listener mode; other values are reserved |
-| `hosts.toml` | `allowed_sni` | `[]` | Extra names accepted for a main host |
-| `rules.toml` | `client_random_auth_key` | none | Hex key for `client_random` checks |
+| `vpn.toml` | `xhttp_enable` | `false` | Включает NineLives |
+| `vpn.toml` | `xhttp_path` | `"/api/v2/"` | Начало пути запросов NineLives |
+| `vpn.toml` | `xhttp_secret_key` | нет | Seed Ed25519 (32 байта, base64), которым подписывается рукопожатие NineLives |
+| `vpn.toml` | `xhttp_resume_timeout` | `60` | Сколько секунд сессия ждёт продолжения; `0` выключает продолжение |
+| `vpn.toml` | `xhttp_memory_limit` | 1/4 памяти, 64..512 МиБ | Общий бюджет буферов NineLives, байты |
+| `vpn.toml` | `xhttp_unacked_limit` | `1048576` | Неподтверждённые байты на сессию |
+| `vpn.toml` | `xhttp_supported_versions` | `[1]` | Есть только протокол 1 |
+| `vpn.toml` | `transport_mode` | `"xhttp"` | Режим приёмника NineLives; остальные значения зарезервированы |
+| `hosts.toml` | `allowed_sni` | `[]` | Дополнительные имена основного хоста |
+| `rules.toml` | `client_random_auth_key` | нет | Ключ (hex) для проверки `client_random` |
 
-## Export a client configuration
+## Конфигурация для клиента
 
-The endpoint prints a configuration for a user from `credentials.toml`:
+Сервер печатает настройки для пользователя из `credentials.toml`:
 
 ```shell
 cd /opt/trusttunnel
 ./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address>
 ```
 
-`<address>` is `ip`, `ip:port`, `domain` or `domain:port`. The default output is a
-`tt://?` deep link ([DEEP_LINK.md](DEEP_LINK.md)) that the CatTunnel app imports from text
-or a QR code. `--format toml` prints a TOML file for a command-line client. Other options:
-`--name`, `--dns-upstream`, `--client-random-auth-key`, `--subscription-url`,
-`--subscription-only`; see `./trusttunnel_endpoint -h` and
-[CONFIGURATION.md](CONFIGURATION.md#command-line-arguments).
+`<address>`: `ip`, `ip:port`, `domain` или `domain:port`. По умолчанию выводится ссылка `tt://?` ([DEEP_LINK.md](DEEP_LINK.md)), которую приложение CatTunnel берёт из текста или QR-кода. `--format toml` печатает файл TOML для консольного клиента. Другие параметры: `--name`, `--dns-upstream`, `--client-random-auth-key`, `--subscription-url`, `--subscription-only`; см. `./trusttunnel_endpoint -h` и [CONFIGURATION.md](CONFIGURATION.md#command-line-arguments).
 
-The exported link does not contain the NineLives settings. A client that should use
-NineLives needs `xhttp_enable`, the path and the server public key in its link; the CatTunnel
-app reads them from `tt://` tags `0x4F`, `0x50` and `0x51` (see
-[docs/ninelives.md](docs/ninelives.md#client-side)).
+В такой ссылке нет настроек NineLives. Клиенту, который должен ходить через NineLives, в ссылке нужны `xhttp_enable`, путь и открытый ключ сервера: приложение CatTunnel читает их из тегов `tt://` `0x4F`, `0x50` и `0x51` (см. [docs/ninelives.md](docs/ninelives.md#клиент)).
 
-A deep link that carries a subscription URL contains HTTP Basic Auth credentials. Treat such
-links as secrets.
+Ссылка с адресом подписки содержит логин и пароль HTTP Basic Auth. Храните такие ссылки как секрет.
 
 ## Docker
 
-`Dockerfile` builds the endpoint from this source tree. `docker-compose.yml` maps host
-port 443 to container port 8443 and keeps the configuration in a volume:
+`Dockerfile` собирает сервер из этого дерева. `docker-compose.yml` пробрасывает порт 443 хоста на порт 8443 контейнера и держит настройки в томе:
 
 ```shell
 docker compose up -d --build
 ```
 
-Without config files the container runs `setup_wizard` (interactive with a TTY, otherwise
-non-interactive from `TT_*` environment variables, see `docker-entrypoint.sh`). Details:
-[DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
+Без файлов настроек контейнер запускает `setup_wizard` (с вопросами, если есть TTY, иначе из переменных окружения `TT_*`, см. `docker-entrypoint.sh`). Подробно: [DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
 
-## Documentation
+## Документация
 
-| File | Content |
+| Файл | Что в нём |
 | --- | --- |
-| [docs/features.md](docs/features.md) | Server side of CatTunnel features and their keys |
-| [docs/ninelives.md](docs/ninelives.md) | NineLives overview, keys, key generation |
-| [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | NineLives wire format (in Russian) |
-| [CONFIGURATION.md](CONFIGURATION.md) | All settings and command line options |
-| [PROTOCOL.md](PROTOCOL.md) | Base tunnel protocol (`CONNECT` transport) |
-| [DEEP_LINK.md](DEEP_LINK.md) | `tt://` deep link format |
-| [CERT_RENEWAL.md](CERT_RENEWAL.md) | Certificate renewal with Certbot |
-| [METRICS.md](METRICS.md) | Prometheus metrics |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Building, cross-compiling, Docker, benchmarks |
-| [CHANGELOG.md](CHANGELOG.md) | Changes of this fork, then upstream history |
+| [docs/features.md](docs/features.md) | Что возможностям CatTunnel нужно от сервера, ключи |
+| [docs/ninelives.md](docs/ninelives.md) | NineLives: как устроен, ключи, создание ключа |
+| [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | Формат NineLives на проводе |
+| [CONFIGURATION.md](CONFIGURATION.md) | Все настройки и параметры командной строки (англ.) |
+| [PROTOCOL.md](PROTOCOL.md) | Базовый протокол туннеля, транспорт `CONNECT` (англ.) |
+| [DEEP_LINK.md](DEEP_LINK.md) | Формат ссылок `tt://` (англ.) |
+| [CERT_RENEWAL.md](CERT_RENEWAL.md) | Продление сертификата через Certbot (англ.) |
+| [METRICS.md](METRICS.md) | Метрики Prometheus (англ.) |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Сборка, кросс-компиляция, Docker, бенчмарки (англ.) |
+| [CHANGELOG.md](CHANGELOG.md) | Изменения форка, затем история апстрима (англ.) |
 
-## License
+## Лицензия
 
-Apache License 2.0, see [LICENSE](LICENSE).
+Apache License 2.0, см. [LICENSE](LICENSE).
 
-CatTunnel server is based on TrustTunnel by AdGuard, Apache License 2.0; modified. Copyright
-notices in the source files are kept. CatTunnel is an independent project: it is not
-affiliated with or endorsed by AdGuard. "TrustTunnel" and "AdGuard" are trademarks of their
-owners.
+CatTunnel server основан на TrustTunnel от AdGuard (Apache License 2.0) и изменён. Уведомления об авторских правах в исходниках сохранены. CatTunnel: независимый проект, с AdGuard не связан и им не одобрен. «TrustTunnel» и «AdGuard»: товарные знаки их владельцев.

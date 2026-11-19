@@ -5,8 +5,8 @@
 CatTunnel server implements this protocol, which comes from upstream TrustTunnel and is
 referred to below as the TrustTunnel protocol. The CatTunnel additions that change what goes
 over the wire (the `CONNECT` answer headers, client-side HTTP/2 padding and the NineLives
-transport) are described in [docs/features.md](docs/features.md) and
-[docs/ninelives.md](docs/ninelives.md).
+transport) are described in [docs/features.en.md](docs/features.en.md) and
+[docs/ninelives.en.md](docs/ninelives.en.md).
 
 ## Abstract
 

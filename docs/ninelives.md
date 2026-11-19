@@ -1,113 +1,73 @@
-# NineLives (XHTTP protocol 1)
+# NineLives (XHTTP, протокол 1)
 
-NineLives is the second transport of CatTunnel, next to `CONNECT`. This page is an overview
-for server operators. The exact wire format is in [xhttp-protocol.md](xhttp-protocol.md) (in
-Russian).
+[English](ninelives.en.md)
 
-The config keys say `xhttp` for historical reasons. NineLives is **not** compatible with XHTTP
-from Xray: it has its own framing, its own body encryption and its own resume, and it does not
-accept Xray links or configurations.
+NineLives: второй транспорт CatTunnel рядом с `CONNECT`. Эта страница для тех, кто держит сервер. Точный формат на проводе: [xhttp-protocol.md](xhttp-protocol.md).
 
-## How it works
+Слово `xhttp` в ключах осталось по истории. С XHTTP из Xray NineLives **не совместим**: у него свои кадры, своё шифрование тела и своё продолжение сессии, ссылки и настройки Xray он не принимает.
 
-- **Paired requests.** One TCP session of the client uses two HTTP/2 streams on the same path
-  `<xhttp_path><sid>`: a `GET` whose response body carries the download and a `POST` whose
-  request body carries the upload. The session id (`sid`) is 1 to 64 characters from
-  `A-Z a-z 0-9 - _`. Both requests carry `x-xhttp-version: 1`. HTTP authentication is
-  checked before the two halves are paired, and both halves must belong to the same user. A
-  half waits up to 30 s for its pair; at most 1024 sessions may wait.
-- **Frames.** The bodies carry frames: `OPEN` (destination `host:port`), `DATA`, `ACK`,
-  `FIN`, `RST`, `PAD`, `RESUME`, `PING`/`PONG`, `HELLO`/`HELLO_ACK` and
-  `RESUME_TOKEN`. Each frame has a type, a byte offset and a length. Upload bytes are
-  acknowledged only after the destination socket has accepted them; download bytes are kept
-  until the client acknowledges them.
-- **Signed handshake and body encryption (suite 1).** Optional for direct connections. The
-  client sends `HELLO` with an ephemeral X25519 public key and a nonce. The server answers
-  with its own ephemeral X25519 key and an Ed25519 signature over the transcript (protocol
-  version, suite, capabilities, `sid`, both public keys, client nonce), made with the static
-  key `xhttp_secret_key`. The client checks the signature with the server public key it got
-  in its link. HKDF-SHA256 (salt = SHA-256 of the transcript) derives a separate AES-128-GCM
-  key for each direction; the nonce has a direction byte and a per-direction counter, and the
-  `sid` is the associated data. A failed key exchange, signature or decryption never falls
-  back to an unencrypted body. Without encryption the stream is protected by TLS alone.
-- **Resume.** The server gives each TCP session a 32-byte resume token. After the connection
-  drops, the client opens a new `GET`/`POST` pair with the same `sid`; the server sends a
-  fresh challenge, and the client answers with `RESUME`: the offsets it has and an
-  HMAC-SHA256 proof over the token, the `sid`, the offsets and the challenge. The old
-  transport is cancelled only after the proof is checked. An encrypted session always runs a
-  new handshake with new keys before resuming. The server replays unacknowledged download
-  data from the client's offset. `xhttp_resume_timeout` says how long a broken session is
-  kept (60 s by default).
-- **FIN.** The server sends `FIN` with the final download offset and keeps the data until the
-  client acknowledges that offset, then frees the session at once.
-- **Memory budget.** All NineLives buffers are charged to one global budget,
-  `xhttp_memory_limit`. Each new session reserves 256 KiB first; if that does not fit, the
-  request gets HTTP 503 and existing sessions are not evicted. Decoder and replay buffers are
-  reserved before data is copied. A download waits for budget; an upload that cannot reserve
-  space closes its transport without acknowledging the unaccepted bytes, and the session can
-  resume later. TLS, HTTP/2 and kernel buffers are not counted.
+## Как работает
 
-Protocol versions 2 and 3, crypto suite 2, the CDN mode and non-zero capability bits are
-reserved and rejected. There is no fallback to another version.
+- **Пара запросов.** Одна TCP-сессия клиента занимает два потока HTTP/2 на одном пути `<xhttp_path><sid>`: `GET`, в теле ответа которого идёт загрузка, и `POST`, в теле запроса которого идёт отдача. Идентификатор сессии (`sid`): от 1 до 64 символов из `A-Z a-z 0-9 - _`. Оба запроса несут `x-xhttp-version: 1`. HTTP-авторизация проверяется до того, как половины сводятся в пару, и обе половины должны принадлежать одному пользователю. Половина ждёт пару до 30 с, ждать одновременно могут не больше 1024 сессий.
+- **Кадры.** В телах идут кадры: `OPEN` (куда подключаться, `host:port`), `DATA`, `ACK`, `FIN`, `RST`, `PAD`, `RESUME`, `PING`/`PONG`, `HELLO`/`HELLO_ACK` и `RESUME_TOKEN`. У каждого кадра есть тип, смещение в байтах и длина. Байты отдачи подтверждаются только после того, как их принял сокет назначения; байты загрузки хранятся, пока клиент их не подтвердит.
+- **Подписанное рукопожатие и шифрование тела (набор 1).** Для прямых подключений по желанию. Клиент шлёт `HELLO` с временным открытым ключом X25519 и nonce. Сервер отвечает своим временным ключом X25519 и подписью Ed25519 по транскрипту (версия протокола, набор, возможности, `sid`, оба открытых ключа, nonce клиента), сделанной постоянным ключом `xhttp_secret_key`. Клиент проверяет подпись открытым ключом сервера из своей ссылки. HKDF-SHA256 (соль: SHA-256 транскрипта) выводит отдельный ключ AES-128-GCM на каждое направление; nonce состоит из байта направления и счётчика этого направления, `sid` идёт как связанные данные. Если обмен ключами, подпись или расшифровка не удались, тело никогда не уходит открытым. Без шифрования поток защищён только TLS.
+- **Продолжение сессии.** Сервер даёт каждой TCP-сессии 32-байтный токен продолжения. После обрыва клиент открывает новую пару `GET`/`POST` с тем же `sid`; сервер шлёт свежий вызов (challenge), клиент отвечает `RESUME`: смещения, которые у него есть, и доказательство HMAC-SHA256 по токену, `sid`, смещениям и вызову. Старый транспорт отменяется только после проверки доказательства. Зашифрованная сессия перед продолжением всегда проходит новое рукопожатие с новыми ключами. Сервер заново отправляет неподтверждённую загрузку начиная со смещения клиента. `xhttp_resume_timeout` задаёт, сколько оборванная сессия ждёт (по умолчанию 60 с).
+- **FIN.** Сервер шлёт `FIN` с итоговым смещением загрузки и хранит данные, пока клиент не подтвердит это смещение, после чего сразу освобождает сессию.
+- **Бюджет памяти.** Все буферы NineLives списываются с одного общего бюджета `xhttp_memory_limit`. Каждая новая сессия сначала резервирует 256 КиБ; если не помещается, запрос получает HTTP 503, а существующие сессии не вытесняются. Буферы декодера и повтора резервируются до копирования данных. Загрузка ждёт свободного бюджета; отдача, которой не хватило места, закрывает свой транспорт, не подтверждая непринятые байты, и сессию можно продолжить позже. Буферы TLS, HTTP/2 и ядра не считаются.
 
-## Server configuration
+Версии протокола 2 и 3, набор шифрования 2, режим CDN и ненулевые биты возможностей зарезервированы и отклоняются. Перехода на другую версию нет.
+
+## Настройка сервера
 
 ```toml
 # vpn.toml
 xhttp_enable = true
 xhttp_path = "/api/v2/"
-xhttp_secret_key = "<base64 of a 32-byte Ed25519 seed>"
+xhttp_secret_key = "<base64 от 32-байтного seed Ed25519>"
 xhttp_resume_timeout = 60
 # xhttp_memory_limit = 268435456
 # xhttp_unacked_limit = 1048576
 ```
 
-| Key | Default | Meaning |
+| Ключ | По умолчанию | Что делает |
 | --- | --- | --- |
-| `xhttp_enable` | `false` | Accept NineLives requests on the main hosts |
-| `xhttp_path` | `"/api/v2/"` | Path prefix; the `sid` is appended to it. Must not overlap `ping_path` or `speedtest_path` |
-| `xhttp_secret_key` | none | Standard base64 of the 32-byte Ed25519 seed that signs `HELLO_ACK`. Without it the server cannot answer `HELLO` |
-| `xhttp_resume_timeout` | `60` | Seconds a broken session is kept for resume; `0` turns resume off |
-| `xhttp_memory_limit` | 1/4 of the smaller of RAM and cgroup limit, clamped to 64..512 MiB (64 MiB if unknown) | Global budget for NineLives buffers, bytes |
-| `xhttp_unacked_limit` | `1048576` | Unacknowledged bytes per session |
-| `xhttp_supported_versions` | `[1]` | Only `[1]` is valid |
-| `transport_mode` | `"xhttp"` | Only `"xhttp"` is valid; `xhttp-cdn` and `sudoku` are reserved |
+| `xhttp_enable` | `false` | Принимать запросы NineLives на основных хостах |
+| `xhttp_path` | `"/api/v2/"` | Начало пути, к нему дописывается `sid`. Не должен пересекаться с `ping_path` и `speedtest_path` |
+| `xhttp_secret_key` | нет | Обычный base64 от 32-байтного seed Ed25519, которым подписывается `HELLO_ACK`. Без него сервер не может ответить на `HELLO` |
+| `xhttp_resume_timeout` | `60` | Сколько секунд оборванная сессия ждёт продолжения; `0` выключает продолжение |
+| `xhttp_memory_limit` | 1/4 от меньшего из объёма памяти и лимита cgroup, в пределах 64..512 МиБ (64 МиБ, если не известно) | Общий бюджет буферов NineLives, байты |
+| `xhttp_unacked_limit` | `1048576` | Неподтверждённые байты на сессию |
+| `xhttp_supported_versions` | `[1]` | Допустимо только `[1]` |
+| `transport_mode` | `"xhttp"` | Допустимо только `"xhttp"`; `xhttp-cdn` и `sudoku` зарезервированы |
 
-`CONNECT` keeps working next to NineLives on the same port.
+`CONNECT` продолжает работать рядом с NineLives на том же порту.
 
-## Key generation
+## Создание ключа
 
-`xhttp_secret_key` is the raw 32-byte Ed25519 seed in standard base64. The client needs the
-matching 32-byte public key, also in standard base64 (44 characters). With OpenSSL:
+`xhttp_secret_key`: сырой 32-байтный seed Ed25519 в обычном base64. Клиенту нужен парный 32-байтный открытый ключ, тоже в обычном base64 (44 символа). Через OpenSSL:
 
 ```shell
 openssl genpkey -algorithm ed25519 -out xhttp-key.pem
-# xhttp_secret_key for vpn.toml
+# xhttp_secret_key для vpn.toml
 openssl pkey -in xhttp-key.pem -outform DER | tail -c 32 | base64
-# public key for the clients
+# открытый ключ для клиентов
 openssl pkey -in xhttp-key.pem -pubout -outform DER | tail -c 32 | base64
 ```
 
-The seed is a secret: whoever has it can impersonate the server to NineLives clients. Keep
-`vpn.toml` readable only by the service.
+Seed секретный: у кого он есть, тот может выдать себя за сервер перед клиентами NineLives. `vpn.toml` должен читать только сам сервис.
 
-## Client side
+## Клиент
 
-The endpoint's `-c` export does not include NineLives settings. The CatTunnel client reads
-them from its `tt://` link (usually written by a subscription service):
+Выгрузка `-c` не включает настройки NineLives. Клиент CatTunnel берёт их из своей ссылки `tt://` (обычно её пишет сервис подписок):
 
-| Tag | Value |
+| Тег | Значение |
 | --- | --- |
-| `0x4F` | NineLives on (boolean) |
-| `0x50` | Path prefix, if it differs from `/api/v2/` |
-| `0x51` | Server Ed25519 public key, base64 (44 characters) |
+| `0x4F` | NineLives включён (булево) |
+| `0x50` | Начало пути, если оно не `/api/v2/` |
+| `0x51` | Открытый ключ Ed25519 сервера, base64 (44 символа) |
 
-Without `0x51`, or with the encryption switch off in the app, the client sends no `HELLO` and
-the body is protected by TLS only. In the CatTunnel app NineLives is in the expert settings of
-a server.
+Без `0x51` или с выключенным шифрованием в приложении клиент не шлёт `HELLO`, и тело защищено только TLS. В приложении CatTunnel NineLives находится в экспертных настройках сервера.
 
-## Status
+## Состояние
 
-NineLives is released with CatTunnel 1.5.9. Session resume of up to 60 s is part of this
-release. Traffic shape (frame sizes and timing compared with a browser) is still being
-tuned, so the transport may change in a later protocol version.
+NineLives вышел в CatTunnel 1.5.9 вместе с продолжением сессии до 60 с. Форма трафика (размеры кадров и время между ними по сравнению с браузером) ещё настраивается, так что транспорт может измениться в следующей версии протокола.

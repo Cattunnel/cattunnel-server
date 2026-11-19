@@ -127,7 +127,7 @@ follow this document skip unknown tags. Absent tags leave the client's own setti
 | `0x4C` | `keepalive_interval_secs` | VarInt | Keepalive interval of an idle session |
 | `0x4D` | `keepalive_signal` | String | Keepalive kind |
 | `0x4E` | `session_lifetime_secs` | VarInt | Session lifetime before a planned reconnect |
-| `0x4F` | `xhttp_enable` | Bool | Use the NineLives transport ([docs/ninelives.md](docs/ninelives.md)) |
+| `0x4F` | `xhttp_enable` | Bool | Use the NineLives transport ([docs/ninelives.en.md](docs/ninelives.en.md)) |
 | `0x50` | `xhttp_path` | String | NineLives path prefix |
 | `0x51` | `xhttp_server_key` | String | Server Ed25519 public key for NineLives, base64 (44 characters) |
 
