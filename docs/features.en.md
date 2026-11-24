@@ -15,6 +15,22 @@ Key names are literal identifiers in `vpn.toml`, `hosts.toml` and `rules.toml`.
 - [Metrics](#metrics)
 - [Client-side features](#client-side-features)
 
+```text
+ incoming TCP :443
+   |
+   v
+ TLS listener (a ClientHello split into records is joined)
+   |-- SNI of the main host or allowed_sni ----+
+   |-- client_random by rules.toml ------------+
+   v                                            v
+ HTTP/2: login from credentials.toml?    no login / a "site only"
+   |-- CONNECT -> stream to the target          address: decoy site
+   |     (200 with headers, data in
+   |      4096-byte DATA frames)
+   |-- NineLives (xhttp_enable)
+   '-- subscription, metrics
+```
+
 ## NineLives transport
 
 A second transport next to `CONNECT`, enabled with `xhttp_enable = true`. Overview, keys and

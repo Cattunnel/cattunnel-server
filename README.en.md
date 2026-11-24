@@ -6,10 +6,24 @@ CatTunnel server is the VPN endpoint used by the CatTunnel apps. It is a fork of
 TrustTunnel endpoint (version 1.3.0-beta.2) and speaks the same protocol: TLS, then
 HTTP/2 (or HTTP/3 over QUIC), with every TCP connection of the user carried as a
 `CONNECT` stream. On top of that it adds NineLives, a second transport made of paired
-HTTP requests, plus several changes to the TLS listener, the decoy site and the
-`CONNECT` answer.
+HTTP requests, an optional outer layer CatTail, plus several changes to the TLS listener,
+the decoy site and the `CONNECT` answer.
 
-This tree is `1.3.0-beta.2-32-ga12e73a`.
+This tree is `1.3.0-beta.2-44-gb30fe98`, the server for CatTunnel 1.5.9.5.
+
+```text
+ CatTunnel client                        CatTunnel server :443
+   TLS + HTTP/2 ----------------------->  TLS listener
+   one CONNECT stream per app               |
+   connection, or a GET/POST pair           +-- valid login: tunnel
+   (NineLives)                              |     CONNECT, DATA in 4096 B,
+                                            |     or NineLives
+                                            +-- no login, or a "site only"
+                                                address: decoy site
+
+ optional: a separate CatTail port
+   CatTail frames (no TLS headers, no SNI) -> strip layer -> same TLS
+```
 
 ## CatTunnel repositories
 
@@ -23,6 +37,7 @@ This tree is `1.3.0-beta.2-32-ga12e73a`.
 
 - [Names kept from upstream](#names-kept-from-upstream)
 - [Features](#features)
+- [Prebuilt binaries](#prebuilt-binaries)
 - [Build](#build)
 - [Install and run](#install-and-run)
 - [Configuration](#configuration)
@@ -70,6 +85,14 @@ Short list. The server side of each feature, with the config keys, is in
   [docs/ninelives.en.md](docs/ninelives.en.md).
 - **`CONNECT` answer.** The `200` response to `CONNECT` carries `date`, `server`,
   `cache-control` and two random identifiers of random length, instead of a bare status line.
+  Since 1.5.9.5 the response data goes in 4096-byte DATA frames, closer to a browser download.
+- **CatTail** (1.5.9.5, optional). An outer layer on its own port: the client wraps its TLS
+  bytes into authenticated, padded frames, so the wire carries no TLS record headers, no SNI
+  and no fixed prefix. The endpoint strips the layer and hands the bytes to the same TLS
+  listener. Off unless the `[cattail]` section is set. Specification and test vectors:
+  [docs/cattail.md](docs/cattail.md).
+- **TLS profile in links.** Tag `0x10` in `tt://` carries a numeric TLS profile; clients
+  that do not know the tag skip it.
 - **TLS listener.** A ClientHello split across several TLS records is joined before the
   listener parses it, so the client may split it. Input that is not TLS is rejected at once.
 - **Decoy site.** HTTP/1.1 keep-alive, chunked bodies and trailers pass through correctly,
@@ -89,9 +112,21 @@ the CatTunnel client work with this server and with an unmodified upstream endpo
 server only has to accept standard HTTP/2 padding and several TLS connections per client,
 which it does. Details: [docs/features.en.md](docs/features.en.md#client-side-features).
 
+## Prebuilt binaries
+
+The [releases](https://github.com/Cattunnel/cattunnel-server/releases) carry static Linux
+builds: `trusttunnel-v<version>-linux-x86_64.tar.gz` and
+`trusttunnel-v<version>-linux-aarch64.tar.gz` (`trusttunnel_endpoint` and LICENSE inside)
+and `SHA256SUMS`:
+
+```shell
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf trusttunnel-v1.5.9.5-linux-x86_64.tar.gz
+```
+
 ## Build
 
-There are no prebuilt binaries in this README. Build from source.
+To build from source:
 
 Requirements (see [DEVELOPMENT.md](DEVELOPMENT.md)): Rust 1.95 (pinned in
 `rust-toolchain.toml`), CMake, libclang and a C++ compiler. Linux and macOS are supported.
@@ -102,19 +137,19 @@ cd cattunnel-server
 cargo build --bins --release
 ```
 
-The binaries are `target/release/trusttunnel_endpoint` and `target/release/setup_wizard`.
-The same through the Makefile: `make endpoint/build` and `make endpoint/build-wizard`.
+The binary is `target/release/trusttunnel_endpoint`; the setup wizard is built into it
+(`--setup-wizard`). The same through the Makefile: `make endpoint/build`, wizard: `make endpoint/setup`.
 
 Tests and linters: `make test`, `make lint` (needs `markdownlint-cli`, rustfmt and clippy).
 
 ## Install and run
 
-Copy the two binaries and the service template to one directory, for example
+Copy the binary and the service template to one directory, for example
 `/opt/trusttunnel`:
 
 ```shell
 sudo mkdir -p /opt/trusttunnel
-sudo cp target/release/trusttunnel_endpoint target/release/setup_wizard /opt/trusttunnel/
+sudo cp target/release/trusttunnel_endpoint /opt/trusttunnel/
 sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
 ```
 
@@ -123,10 +158,10 @@ and the certificate (Let's Encrypt, self-signed, or existing files):
 
 ```shell
 cd /opt/trusttunnel
-sudo ./setup_wizard
+sudo ./trusttunnel_endpoint --setup-wizard
 ```
 
-`sudo` is needed to manage TLS certificates. `./setup_wizard -h` lists the
+`sudo` is needed to manage TLS certificates. `./trusttunnel_endpoint --setup-wizard -h` lists the
 non-interactive options. Certificate renewal with Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
 
 Run it as a systemd service. The template assumes the binary and the config files are in
@@ -138,7 +173,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 ```
 
-To update, build the new revision, stop the service, replace the binaries and start it again.
+To update, download or build the new version, stop the service, replace the binary and start it again.
 
 `scripts/install.sh` from upstream downloaded upstream release archives. In this fork it only
 prints a message and exits with an error, so that nobody installs upstream binaries by
@@ -199,7 +234,7 @@ port 443 to container port 8443 and keeps the configuration in a volume:
 docker compose up -d --build
 ```
 
-Without config files the container runs `setup_wizard` (interactive with a TTY, otherwise
+Without config files the container runs `trusttunnel_endpoint --setup-wizard` (interactive with a TTY, otherwise
 non-interactive from `TT_*` environment variables, see `docker-entrypoint.sh`). Details:
 [DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
 
@@ -210,6 +245,7 @@ non-interactive from `TT_*` environment variables, see `docker-entrypoint.sh`). 
 | [docs/features.en.md](docs/features.en.md) | Server side of CatTunnel features and their keys |
 | [docs/ninelives.en.md](docs/ninelives.en.md) | NineLives overview, keys, key generation |
 | [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | NineLives wire format (in Russian) |
+| [docs/cattail.md](docs/cattail.md) | CatTail: layer specification, test vectors |
 | [CONFIGURATION.md](CONFIGURATION.md) | All settings and command line options |
 | [PROTOCOL.md](PROTOCOL.md) | Base tunnel protocol (`CONNECT` transport) |
 | [DEEP_LINK.md](DEEP_LINK.md) | `tt://` deep link format |

@@ -28,6 +28,20 @@ and mieru are GPL-3.0; no code from them, or from AnyTLS, is used.
 The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 All integers are unsigned and big-endian.
 
+```text
+ client                                   endpoint (CatTail listener)
+   TLS 1.3 + HTTP/2 bytes                   |
+        |                                   |
+   N_c | OPEN frame | DATA | DATA ... --->  admission: key, time window,
+        (AEAD + random padding,             identity + counter (replay)
+         no TLS headers, no SNI)            |  fail: stay silent
+                                            v
+   <--- N_s | DATA | DATA ...          strip frames -> inner bytes
+                                            |
+                                            v
+                                     same TLS acceptor as :443
+```
+
 ## 1. Primitives
 
 | Name | Definition |
@@ -75,6 +89,14 @@ write. The first frame of the client direction has the type OPEN, every other
 frame (in both directions) has the type DATA.
 
 ### 2.2 Frame
+
+```text
+ +-----------+-------------+-------------------+-------------+
+ | E(header) | mid padding | E(body)           | end padding |
+ | 48 B      | mid_len B   | body_len + 16 B   | end_len B   |
+ +-----------+-------------+-------------------+-------------+
+   AEAD        not authed    AEAD, next counter  not authed
+```
 
     E(header) (48) | mid padding (mid_len) | E(body) (body_len + 16) | end padding (end_len)
 

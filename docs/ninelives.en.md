@@ -12,6 +12,20 @@ accept Xray links or configurations.
 
 ## How it works
 
+```text
+ client                                          server
+   GET  <xhttp_path><sid>   <---- download -------
+   POST <xhttp_path><sid>   ----- upload -------->
+   frames: OPEN, DATA, ACK, FIN, PING, PAD, ...
+   (optional HELLO/HELLO_ACK: X25519 + Ed25519 signature,
+    then the body in AES-128-GCM)
+
+ break:
+   new GET/POST pair with the same sid -> server challenge
+   -> RESUME (offsets + HMAC over the token) -> resend of
+      the unacknowledged data (waits xhttp_resume_timeout, 60 s)
+```
+
 - **Paired requests.** One TCP session of the client uses two HTTP/2 streams on the same path
   `<xhttp_path><sid>`: a `GET` whose response body carries the download and a `POST` whose
   request body carries the upload. The session id (`sid`) is 1 to 64 characters from

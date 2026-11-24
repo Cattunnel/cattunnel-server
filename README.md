@@ -1,10 +1,24 @@
 # CatTunnel server
 
-CatTunnel server: VPN-сервер, к которому подключаются приложения CatTunnel. Это форк TrustTunnel endpoint (версия 1.3.0-beta.2), протокол тот же: TLS, поверх него HTTP/2 (или HTTP/3 по QUIC), и каждое TCP-соединение пользователя идёт отдельным потоком `CONNECT`. Форк добавляет NineLives, второй транспорт из пары HTTP-запросов, и меняет TLS-приёмник, сайт-приманку и ответ на `CONNECT`.
+CatTunnel server: VPN-сервер, к которому подключаются приложения CatTunnel. Это форк TrustTunnel endpoint (версия 1.3.0-beta.2), протокол тот же: TLS, поверх него HTTP/2 (или HTTP/3 по QUIC), и каждое TCP-соединение пользователя идёт отдельным потоком `CONNECT`. Форк добавляет NineLives, второй транспорт из пары HTTP-запросов, необязательный внешний слой CatTail и меняет TLS-приёмник, сайт-приманку и ответ на `CONNECT`.
 
 [English](README.en.md)
 
-Это дерево: `1.3.0-beta.2-32-ga12e73a`.
+Это дерево: `1.3.0-beta.2-44-gb30fe98`, сервер к CatTunnel 1.5.9.5.
+
+```text
+ клиент CatTunnel                        CatTunnel server :443
+   TLS + HTTP/2 ----------------------->  TLS-приёмник
+   поток CONNECT на каждое соединение       |
+   приложения или пара GET/POST             +-- верный логин: туннель
+   (NineLives)                              |     CONNECT, DATA по 4096 Б,
+                                            |     или NineLives
+                                            +-- нет логина, адрес из
+                                                «только сайт»: сайт-приманка
+
+ по желанию: отдельный порт CatTail
+   кадры CatTail (без заголовков TLS и SNI) -> снять слой -> тот же TLS
+```
 
 ## Репозитории CatTunnel
 
@@ -18,6 +32,7 @@ CatTunnel server: VPN-сервер, к которому подключаются
 
 - [Имена, оставшиеся от апстрима](#имена-оставшиеся-от-апстрима)
 - [Возможности](#возможности)
+- [Готовые сборки](#готовые-сборки)
 - [Сборка](#сборка)
 - [Установка и запуск](#установка-и-запуск)
 - [Настройки](#настройки)
@@ -45,7 +60,9 @@ CatTunnel server: VPN-сервер, к которому подключаются
 **Добавлено в форке**
 
 - **Транспорт NineLives (XHTTP, протокол 1).** TCP-сессия клиента идёт двумя HTTP/2-запросами на один путь: `GET`, в теле ответа которого идёт загрузка, и `POST`, в теле запроса которого идёт отдача. У кадров есть смещения и подтверждения. Необязательное подписанное рукопожатие (обмен ключами X25519, подпись сервера Ed25519, HKDF-SHA256, AES-128-GCM на каждое направление) шифрует поток кадров внутри TLS. После обрыва сессию можно продолжить (по умолчанию в течение 60 с). Буферы ограничены общим бюджетом памяти. Без `xhttp_enable = true` NineLives выключен. С XHTTP из Xray он **не совместим**, слово XHTTP в ключах осталось по истории. Подробно: [docs/ninelives.md](docs/ninelives.md).
-- **Ответ на `CONNECT`.** Ответ `200` несёт `date`, `server`, `cache-control` и два случайных идентификатора случайной длины, а не голую строку статуса.
+- **Ответ на `CONNECT`.** Ответ `200` несёт `date`, `server`, `cache-control` и два случайных идентификатора случайной длины, а не голую строку статуса. С 1.5.9.5 данные ответа идут кадрами DATA по 4096 байт, ближе к тому, как браузер получает файл.
+- **CatTail** (1.5.9.5, по желанию). Внешний слой на отдельном порту: клиент заворачивает свои TLS-байты в кадры с аутентификацией и случайной набивкой, на проводе нет заголовков TLS, SNI и постоянного префикса. Сервер снимает слой и отдаёт байты тому же TLS-приёмнику. Без секции `[cattail]` выключен. Спецификация и тестовые векторы: [docs/cattail.md](docs/cattail.md).
+- **Профиль TLS в ссылке.** Тег `0x10` в `tt://` передаёт клиенту числовой профиль TLS; клиенты без поддержки тега его пропускают.
 - **TLS-приёмник.** ClientHello, разбитый на несколько TLS-записей, собирается до разбора, так что клиент может его разбивать. Не-TLS отбрасывается сразу.
 - **Сайт-приманка.** Правильно проходят keep-alive HTTP/1.1, тела частями (chunked) и трейлеры, длина строк размера и трейлеров ограничена, на хостах обратного прокси разрешён HTTP/2.
 - **Адреса «только сайт».** Файл из ключа `decoy_only_ips_file` (адреса и подсети по одному в строке, `#` для комментариев) перечитывается, когда меняется. Клиенту с такого адреса сервер на любой запрос к VPN (`CONNECT`, NineLives, подписка) отвечает так же, как на неверный пароль, а сайт-приманку показывает как всем. Список заполняет внешний скрипт, например из ipset адресов, которые стучались в закрытые порты.
@@ -55,9 +72,18 @@ CatTunnel server: VPN-сервер, к которому подключаются
 
 Паддинг HTTP/2, пул соединений, TLS-профили браузеров и режимы анти-DPI клиента CatTunnel работают и с этим сервером, и с немодифицированным апстримом. Серверу достаточно принимать стандартный паддинг HTTP/2 и несколько TLS-соединений от одного клиента, что он и делает. Подробно: [docs/features.md](docs/features.md#возможности-клиента).
 
+## Готовые сборки
+
+В [релизах](https://github.com/Cattunnel/cattunnel-server/releases) лежат статические сборки для Linux: `trusttunnel-v<версия>-linux-x86_64.tar.gz` и `trusttunnel-v<версия>-linux-aarch64.tar.gz` (внутри `trusttunnel_endpoint` и LICENSE) и `SHA256SUMS`:
+
+```shell
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf trusttunnel-v1.5.9.5-linux-x86_64.tar.gz
+```
+
 ## Сборка
 
-Готовых бинарников нет, собирайте из исходников.
+Собрать из исходников:
 
 Нужно (см. [DEVELOPMENT.md](DEVELOPMENT.md)): Rust 1.95 (зафиксирован в `rust-toolchain.toml`), CMake, libclang и компилятор C++. Поддерживаются Linux и macOS.
 
@@ -67,17 +93,17 @@ cd cattunnel-server
 cargo build --bins --release
 ```
 
-Получатся `target/release/trusttunnel_endpoint` и `target/release/setup_wizard`. То же через Makefile: `make endpoint/build` и `make endpoint/build-wizard`.
+Получится `target/release/trusttunnel_endpoint`; мастер настройки встроен в него (`--setup-wizard`). То же через Makefile: `make endpoint/build`, мастер: `make endpoint/setup`.
 
 Тесты и линтеры: `make test`, `make lint` (нужны `markdownlint-cli`, rustfmt и clippy).
 
 ## Установка и запуск
 
-Скопируйте оба бинарника и шаблон службы в один каталог, например `/opt/trusttunnel`:
+Скопируйте бинарник и шаблон службы в один каталог, например `/opt/trusttunnel`:
 
 ```shell
 sudo mkdir -p /opt/trusttunnel
-sudo cp target/release/trusttunnel_endpoint target/release/setup_wizard /opt/trusttunnel/
+sudo cp target/release/trusttunnel_endpoint /opt/trusttunnel/
 sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
 ```
 
@@ -85,10 +111,10 @@ sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
 
 ```shell
 cd /opt/trusttunnel
-sudo ./setup_wizard
+sudo ./trusttunnel_endpoint --setup-wizard
 ```
 
-`sudo` нужен для работы с сертификатами. `./setup_wizard -h` покажет параметры для запуска без вопросов. Продление сертификата через Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
+`sudo` нужен для работы с сертификатами. `./trusttunnel_endpoint --setup-wizard -h` покажет параметры для запуска без вопросов. Продление сертификата через Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
 
 Запуск службой systemd. Шаблон рассчитан на бинарник и файлы настроек в `/opt/trusttunnel` с именами по умолчанию; если пути другие, поправьте его:
 
@@ -98,7 +124,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 ```
 
-Обновление: соберите новую ревизию, остановите службу, замените бинарники и запустите снова.
+Обновление: скачайте или соберите новую версию, остановите службу, замените бинарник и запустите снова.
 
 `scripts/install.sh` в апстриме скачивал архивы апстрима. В форке он только печатает сообщение и завершается с ошибкой, чтобы никто случайно не поставил чужие бинарники.
 
@@ -145,7 +171,7 @@ cd /opt/trusttunnel
 docker compose up -d --build
 ```
 
-Без файлов настроек контейнер запускает `setup_wizard` (с вопросами, если есть TTY, иначе из переменных окружения `TT_*`, см. `docker-entrypoint.sh`). Подробно: [DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
+Без файлов настроек контейнер запускает `trusttunnel_endpoint --setup-wizard` (с вопросами, если есть TTY, иначе из переменных окружения `TT_*`, см. `docker-entrypoint.sh`). Подробно: [DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
 
 ## Документация
 
@@ -154,6 +180,7 @@ docker compose up -d --build
 | [docs/features.md](docs/features.md) | Что возможностям CatTunnel нужно от сервера, ключи |
 | [docs/ninelives.md](docs/ninelives.md) | NineLives: как устроен, ключи, создание ключа |
 | [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | Формат NineLives на проводе |
+| [docs/cattail.md](docs/cattail.md) | CatTail: спецификация слоя, тестовые векторы (англ.) |
 | [CONFIGURATION.md](CONFIGURATION.md) | Все настройки и параметры командной строки (англ.) |
 | [PROTOCOL.md](PROTOCOL.md) | Базовый протокол туннеля, транспорт `CONNECT` (англ.) |
 | [DEEP_LINK.md](DEEP_LINK.md) | Формат ссылок `tt://` (англ.) |
