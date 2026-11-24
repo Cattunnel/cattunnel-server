@@ -1,8 +1,19 @@
 #!/bin/sh
 
-# TrustTunnel Installation Script
+# CatTunnel server installer (fork of the TrustTunnel install script).
+#
+# Downloads a prebuilt release from github.com/Cattunnel/cattunnel-server,
+# checks it against the release SHA256SUMS and unpacks it into the install
+# directory. Running it again updates the binaries and leaves the settings
+# (vpn.toml, hosts.toml, rules.toml, credentials.toml, certificates) alone.
 
 set -e -u
+
+repo='Cattunnel/cattunnel-server'
+repo_url="https://github.com/${repo}"
+
+# Files that hold the operator's settings. The installer never overwrites them.
+keep_files='vpn.toml hosts.toml rules.toml credentials.toml'
 
 # Function log is an echo wrapper that writes to stderr if the caller
 # requested verbosity level greater than 0.  Otherwise, it does nothing.
@@ -46,7 +57,7 @@ parse_opts() {
       uninstall='1'
       ;;
     'V')
-      version="$OPTARG"
+      version="${OPTARG#v}"
       ;;
     'p')
       archive_path="$OPTARG"
@@ -66,8 +77,8 @@ parse_opts() {
       esac
       ;;
     *)
-      log "bad option $OPTARG"
       usage
+      exit 2
     ;;
     esac
   done
@@ -77,14 +88,6 @@ parse_opts() {
 #
 # See https://serverfault.com/a/163493/267530.
 is_little_endian() {
-  # The ASCII character "I" has the octal code of 111.  In the two-byte octal
-  # display mode (-o), hexdump will print it either as "000111" on a little
-  # endian system or as a "111000" on a big endian one.  Return the sixth
-  # character to compare it against the number '1'.
-  #
-  # Do not use echo -n, because its behavior in the presence of the -n flag is
-  # explicitly implementation-defined in POSIX.  Use hexdump instead of od,
-  # because OpenWrt and its derivatives have the former but not the latter.
   is_little_endian_result="$(
     printf 'I'\
       | hexdump -o\
@@ -97,7 +100,6 @@ is_little_endian() {
 
 # Function set_os sets the os if needed and validates the value.
 set_os() {
-  # Set if needed.
   if [ "$os" = '' ]
   then
     os="$( uname -s )"
@@ -115,30 +117,23 @@ set_os() {
     esac
   fi
 
-  # Validate.
   case "$os"
   in
-  ('macos'|'linux')
-    # All right, go on.
+  ('linux')
+    ;;
+  ('macos')
+    error_exit "There are no macOS builds of the CatTunnel server. Only linux-x86_64 and linux-aarch64 are released: ${repo_url}/releases"
     ;;
   (*)
     error_exit "Unsupported operating system: '$os'"
     ;;
   esac
 
-  # Log.
   log "Operating system: $os"
 }
 
 # Function set_cpu sets the cpu if needed and validates the value.
 set_cpu() {
-  # For macOS there is a universal binary, so we don't need to set cpu
-  if [ "$os" = 'macos' ]
-  then
-    return 0
-  fi
-
-  # Set if needed.
   if [ "$cpu" = '' ]
   then
     cpu="$( uname -m )"
@@ -165,37 +160,32 @@ set_cpu() {
     esac
   fi
 
-  # Validate.
   case "$cpu"
   in
   ('x86_64'|'aarch64')
-    # All right, go on.
     ;;
   (*)
-    error_exit "Unsupported cpu type: $cpu"
+    error_exit "Unsupported cpu type: $cpu. Released: x86_64, aarch64"
     ;;
   esac
 
-  # Log.
   log "CPU type: $cpu"
 }
 
-# Function for queries with support for auto-answer
+# Function for queries with support for auto-answer. Without a terminal
+# (curl | sh in a container, CI) the answer is empty, which means "no".
 ask_user() {
-  local prompt="$1"
-  printf "%s" "$prompt"
+  printf "%s" "$1"
   if [ -n "$auto_answer" ]; then
     response="$auto_answer"
     echo "$response"
   else
-    read -r response < /dev/tty
+    response=''
+    read -r response < /dev/tty 2>/dev/null || echo
   fi
 }
 
 set_is_root() {
-  if [ $USER = "root" ]; then
-    is_root='1'
-  fi
   if [ "$(id -u)" = "0" ]; then
     is_root='1'
   fi
@@ -205,48 +195,32 @@ set_is_root() {
 is_dir_owned_by_current_user() {
   dir="$1"
 
-  if [ "$os" = "macos" ]; then
-      # macOS
-      if ! owner_name=$(stat -f '%Su' "$dir"); then
-          echo "Cannot stat '$dir'"
-          return 0
-      fi
-  elif [ "$os" = "linux" ]; then
-      # Linux
-      if ! owner_name=$(stat -c '%U' "$dir"); then
-          echo "Cannot stat '$dir'"
-          return 0
-      fi
-  else
-      echo "Unsupported OS: $os"
-      return 1
+  if ! owner_name=$(stat -c '%U' "$dir"); then
+    echo "Cannot stat '$dir'"
+    return 0
   fi
 
-  if [ "$owner_name" = "$USER" ]; then
-      return 0
-  else
-      return 1
-  fi
+  [ "$owner_name" = "$current_user" ]
 }
 
 # Function create_dir creates the output directory if it does not exist.
 create_dir() {
-  mkdir -p "$output_dir" 2>/dev/null
-  if [ $? -eq 1 ];
+  if mkdir -p "$output_dir" 2>/dev/null
   then
-    if [ "$is_root" -eq 0 ]; then
-      echo "Requesting sudo to create directory '$output_dir'"
-      if sudo mkdir -p "$output_dir"; then
-        sudo chown -R "${SUDO_USER:-$USER}" "$output_dir"
-        log "'$output_dir' has been created and ownership has been set to '${SUDO_USER:-$USER}'"
-      else
-        error_exit "Failed to create '$output_dir' with sudo"
-      fi
+    log "'$output_dir' has been created"
+    return 0
+  fi
+
+  if [ "$is_root" -eq 0 ] && type sudo > /dev/null 2>&1; then
+    echo "Requesting sudo to create directory '$output_dir'"
+    if sudo mkdir -p "$output_dir"; then
+      sudo chown -R "${SUDO_USER:-$current_user}" "$output_dir"
+      log "'$output_dir' has been created and ownership has been set to '${SUDO_USER:-$current_user}'"
     else
-      error_exit "Failed to create '$output_dir'"
+      error_exit "Failed to create '$output_dir' with sudo"
     fi
   else
-    log "'$output_dir' has been created"
+    error_exit "Failed to create '$output_dir'. Run as root or choose another directory with -o DIR"
   fi
 }
 
@@ -257,13 +231,13 @@ check_owner() {
   fi
   if is_dir_owned_by_current_user "$output_dir";
   then
-    log "'$output_dir' exists and is owned by '$USER'"
+    log "'$output_dir' exists and is owned by '$current_user'"
   else
-    log "'$output_dir' exists but is not owned by '$USER'"
-    ask_user "Would you like to change the ownership of $output_dir to $USER? [y/N] "
+    log "'$output_dir' exists but is not owned by '$current_user'"
+    ask_user "Would you like to change the ownership of $output_dir to $current_user? [y/N] "
     case "$response" in
     [yY]|[yY][eE][sS])
-      target_user="${SUDO_USER:-$USER}"
+      target_user="${SUDO_USER:-$current_user}"
       if sudo chown -R "$target_user" "$output_dir"; then
         log "Ownership of $output_dir has been changed to '${target_user}'"
       else
@@ -281,11 +255,11 @@ check_owner() {
 check_out_dir() {
   if [ "$output_dir" = '' ]
   then
-    # If output_dir is not set, we will install to /opt
     output_dir='/opt'
   fi
 
-  # If output_dir is '.'or '/opt', create inside it `trusttunnel` directory
+  # If output_dir is '.'or '/opt', create inside it the 'trusttunnel' directory.
+  # The name stays "trusttunnel": the systemd template and the running servers use it.
   if [ "$output_dir" = '.' ] || [ "$output_dir" = '/opt' ]
   then
     output_dir="${output_dir}/trusttunnel"
@@ -293,14 +267,13 @@ check_out_dir() {
 
   if [ "$uninstall" -eq '1' ]
   then
-    echo "TrustTunnel will be uninstalled from '$output_dir'"
+    echo "CatTunnel server will be uninstalled from '$output_dir'"
     return 0
   else
-    echo "TrustTunnel will be installed to '$output_dir'"
+    echo "CatTunnel server will be installed to '$output_dir'"
   fi
 
   set +e
-  # Check if directory exists
   if [ ! -d "$output_dir" ];
   then
     log "'$output_dir' directory does not exist, attempting to create it..."
@@ -312,124 +285,53 @@ check_out_dir() {
   set -e
 }
 
-# TODO: enable this once binaries are signed with gpg
-# Function verify_hint prints a hint about how to verify the installation.
-# verify_hint() {
-#   # Check if `.sig` file exists
-#   if [ -f "${output_dir}/${exe_name}.sig" ]
-#   then
-#     echo
-#     echo "To verify the installation, run the following command to import the public key and verify the signature:"
-#     echo "    gpg --keyserver 'keys.openpgp.org' --recv-key '28645AC9776EC4C00BCE2AFC0FE641E7235E2EC6'"
-#     echo "    gpg --verify ${output_dir}/${exe_name}.sig ${output_dir}/${exe_name}"
-#   fi
-# }
-
-# Function remove_downloaded_package deletes the archive only if it was downloaded and not transferred.
-remove_downloaded_package() {
-  if [ -z "$archive_path" ]; then
-    $remove_command "$pkg_name"
+# Function cleanup removes the temporary directory.
+cleanup() {
+  if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
+    rm -rf "$work_dir"
   fi
 }
 
-# Function unpack unpacks the passed archive depending on it's extension.
-unpack() {
-  log "Unpacking package from '$pkg_name' into '$output_dir'"
-  if ! mkdir -p "$output_dir"
-  then
-    error_exit "Cannot create directory '$output_dir'"
-  fi
-
-  if ! tar -C "$output_dir" -f "$pkg_name" -x -z
-  then
-    remove_downloaded_package
-    error_exit "Cannot unpack '$pkg_name'"
-  fi
-
-  remove_downloaded_package
-  log "Package has been unpacked successfully"
-
-  base_name=$(echo "$pkg_name" | sed -E 's!.*/!!')
-  dir_name=$(echo "${base_name}" | sed -E -e 's/(.*)(\.tar\.gz)/\1/')
-  if [ -z "${dir_name}" ]; then
-    error_exit "Can not determine directory name inside archive"
-  fi
-  if type mv > /dev/null 2>&1; then
-    mv -f "${output_dir}/${dir_name}/"* "${output_dir}"
-  elif type ln > /dev/null 2>&1; then
-    ln -f "${output_dir}/${dir_name}/"* "${output_dir}"
-    rm -f "${output_dir}/${dir_name}/"*
+# Function sha256_of prints the SHA-256 of a file.
+sha256_of() {
+  if type sha256sum > /dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif type shasum > /dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
   else
-    error_exit "You need mv or ln for this script to work. Make sure that \"coreutils-mv\" is installed."
-  fi
-  if type rmdir > /dev/null 2>&1; then
-    rmdir "${output_dir}/${dir_name}"
-  else
-    if [ "$(echo "${output_dir}/${dir_name}/"*)" != "${output_dir}/${dir_name}/*" ]; then
-      error_exit "Directory not empty"
-    fi
-    rm -rf "${output_dir:?}/${dir_name:?}"
+    error_exit "Neither sha256sum nor shasum is available, cannot verify the package"
   fi
 }
 
-# Function unpack unpacks the passed archive depending on it's extension.
-check_package() {
-  if [ "$uninstall" -eq '1' ]; then
-    return 0
-  fi
-
-  log "Checking downloaded package '$pkg_name'"
-  case "$pkg_ext"
-  in
-  ('tar.gz')
-    if ! tar -f "$pkg_name" -z -t > /dev/null
-    then
-      remove_downloaded_package
-      error_exit "Error checking '$pkg_name'"
-    fi
-    ;;
-  (*)
-    error_exit "Unexpected package extension: '$pkg_ext'"
-    ;;
-  esac
-}
-
-# Function parse_version parses the version from the passed script and it's arguments.
-parse_version() {
-  if [ "$uninstall" -eq '1' ]; then
-    return 0
-  fi
-  
+# Function resolve_version finds the latest release tag when -V was not given.
+# The redirect of /releases/latest is used, so no API token and no rate limit.
+resolve_version() {
   if [ -n "$version" ]; then
     return 0
   fi
-  # Extract the base name of the script
-  script_name="${0##*/}"
 
-  version=$(echo "${script_name}" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
-  if [ -z "$version" ]; then
-    echo "Version required"
-    return 1
-  fi
-  echo "Version number extracted from script name: $version"
-}
-
-# Add version to the package name if it's not empty.
-apply_version() {
-  if [ -z "$version" ]; then
-    return 0
-  fi
-
-  pkg_name=$(echo "${pkg_name}" | sed -E "s/trusttunnel/trusttunnel-v${version}/")
+  log "Looking up the latest release of ${repo}"
+  latest_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "${repo_url}/releases/latest")" \
+    || error_exit "Cannot find the latest release at ${repo_url}/releases/latest"
+  version="${latest_url##*/}"
+  version="${version#v}"
+  case "$version" in
+  ([0-9]*.[0-9]*)
+    ;;
+  (*)
+    error_exit "Cannot read the version from '${latest_url}'. Pass it with -V"
+    ;;
+  esac
+  echo "Latest version: $version"
 }
 
 # Main function.
 configure() {
   if [ "$uninstall" -eq '1' ]
   then
-    echo 'Uninstalling TrustTunnel...'
+    echo 'Uninstalling CatTunnel server...'
   else
-    echo 'Installing TrustTunnel...'
+    echo 'Installing CatTunnel server...'
   fi
 
   set_is_root
@@ -437,167 +339,236 @@ configure() {
   set_cpu
   check_out_dir
 
-  pkg_ext='tar.gz'
-  if [ -n "$archive_path" ]; then
-    pkg_name="$archive_path"
-    need_download='0'
-    log "Using user-provided archive: $archive_path"
-    return
-  fi
-
-  parse_version
-
-  if [ "$os" = 'macos' ]
-  then
-    pkg_name="trusttunnel-macos-universal.${pkg_ext}"
-  else
-    pkg_name="trusttunnel-${os}-${cpu}.${pkg_ext}"
-  fi
-  apply_version
-  url="https://github.com/TrustTunnel/TrustTunnel/releases/download/v${version}/${pkg_name}"
-
-  readonly output_dir url pkg_name
-
-  if [ "$uninstall" -eq '0' ]
-  then
-    log "Package name: '$pkg_name'"
-    log "TrustTunnel will be installed in '$output_dir'"
-  fi
-}
-
-# Function handle_uninstall removes the existing package from the output directory.
-handle_uninstall() {
-  # Check if the package is present in the output directory.
-  if [ ! -f "${output_dir}/trusttunnel_endpoint" ]
-  then
-    error_exit "TrustTunnel is not installed in '${output_dir}'. Please specify the correct installation directory"
-  fi
-
-  # Check if vpn is running
-  if pgrep -x "trusttunnel_endpoint" > /dev/null
-  then
-    error_exit "TrustTunnel is currently running, please stop it before uninstalling"
-  fi
-
-  remove_existing
-
-  # Check if the directory is empty
-  if [ -z "$(ls -A "${output_dir}")" ]
-  then
-    set +e
-    log "Remove empty directory: '${output_dir}'"
-    rmdir "${output_dir}" 2>/dev/null
-    if [ $? -eq 1 ];
-    then
-      if [ "$is_root" -eq 0 ]; then
-        echo "Requesting sudo to remove '${output_dir}'"
-        if sudo rmdir "${output_dir}"; then
-          log "Empty directory '${output_dir}' has been removed"
-        else
-          error_exit "Failed to remove empty directory '${output_dir}' with sudo"
-        fi
-      else
-        error_exit "Failed to remove empty directory '${output_dir}'"
-      fi
-    else
-      log "Empty directory '${output_dir}' has been removed"
-    fi
-    set -e
-  fi
-
-  # Check systemd service
-  if [ -L "${systemd_service_path}" ]
-  then
-    log "The systemd service for TrustTunnel is found: ${systemd_service_path}. If you want to remove it, do it manually"
-  fi
-}
-
-# Function remove_existing removes the existing package from the output directory before installing a new one.
-remove_existing() {
-  log 'Removing existing package...'
-  # Remove executable file
-  rm -f "${output_dir}/trusttunnel_endpoint"
-  log "'trusttunnel_endpoint' has been removed from '${output_dir}'"
-  rm -f "${output_dir}/setup_wizard"
-  log "'setup_wizard' has been removed from '${output_dir}'"
-  rm -f "${output_dir}/trusttunnel_endpoint_setup_wizard"
-  log "'trusttunnel_endpoint_setup_wizard' has been removed from '${output_dir}'"
-  rm -f "${output_dir}/trusttunnel.service.template"
-  log "'trusttunnel.service.template' has been removed from '${output_dir}'"
-  rm -f "${output_dir}/LICENSE"
-  log "'LICENSE' has been removed from '${output_dir}'"
-}
-
-# Function checks if the package is already present in the output directory.
-handle_existing() {
-  if [ "$uninstall" -eq '1' ]
-  then
-    handle_uninstall
-    exit 0
-  fi
-
-  if [ ! -f "${output_dir}/trusttunnel_endpoint" ]
-  then
-    return
-  fi
-
-  log "Package 'trusttunnel' is already present in '${output_dir}'"
-  ask_user "Ensure 'TrustTunnel' is stopped before proceeding, continue? [y,N]"
-
-  remove_existing
-}
-
-# Function download downloads the package from the url.
-download() {
   if [ "$uninstall" -eq '1' ]; then
     return 0
   fi
 
-  if [ "$need_download" -eq '0' ]; then
-    return
+  work_dir="$(mktemp -d)" || error_exit "Cannot create a temporary directory"
+  trap cleanup EXIT
+
+  if [ -n "$archive_path" ]; then
+    [ -f "$archive_path" ] || error_exit "Archive '$archive_path' not found"
+    pkg_name="$archive_path"
+    need_download='0'
+    log "Using user-provided archive: $archive_path"
+    return 0
   fi
 
-  log "Downloading TrustTunnel package: $url"
+  type curl > /dev/null 2>&1 || error_exit "curl is required"
+  resolve_version
 
-  # Temporary file name for testing file creation
-  tmp_file="tmp_file_check_$$"
+  pkg_base="trusttunnel-v${version}-${os}-${cpu}.tar.gz"
+  pkg_name="${work_dir}/${pkg_base}"
+  url="${repo_url}/releases/download/v${version}/${pkg_base}"
+  sums_url="${repo_url}/releases/download/v${version}/SHA256SUMS"
 
-  # Check if we can write to the current directory by creating a temporary file
-  if ! touch "$tmp_file" > /dev/null 2>&1; then
-    if [ "$is_root" -eq 0 ]; then
-      ask_user "Cannot create file in the current directory. Try downloading as root? [y/N] "
-      case "$response" in
-      [yY]|[yY][eE][sS])
-        remove_command="sudo rm -f"
-        if ! sudo curl -fsSL "$url" -o "$pkg_name"; then
-          error_exit "Failed to download $pkg_name: $?"
-        fi
-        ;;
-      *)
-        error_exit "Cannot proceed without file creation rights."
-        ;;
-      esac
+  log "Package name: '$pkg_base'"
+}
+
+# Function download downloads the package and SHA256SUMS.
+download() {
+  if [ "$uninstall" -eq '1' ] || [ "$need_download" -eq '0' ]; then
+    return 0
+  fi
+
+  log "Downloading CatTunnel server package: $url"
+  curl -fsSL "$url" -o "$pkg_name" \
+    || error_exit "Failed to download $url"
+  curl -fsSL "$sums_url" -o "${work_dir}/SHA256SUMS" \
+    || error_exit "Failed to download $sums_url"
+  sums_file="${work_dir}/SHA256SUMS"
+  log "Package has been downloaded"
+}
+
+# Function verify_checksum compares the package with the SHA256SUMS line of the
+# same name. There is no signature check: the release has no signatures, so this
+# protects against a damaged download, not against a replaced release.
+verify_checksum() {
+  if [ "$uninstall" -eq '1' ]; then
+    return 0
+  fi
+
+  if [ -z "$sums_file" ] && [ -n "$archive_path" ]; then
+    sibling="$(dirname "$archive_path")/SHA256SUMS"
+    if [ -f "$sibling" ]; then
+      sums_file="$sibling"
+    fi
+  fi
+
+  if [ -z "$sums_file" ]; then
+    echo "WARNING: no SHA256SUMS next to '$archive_path', the archive is not verified" 1>&2
+    return 0
+  fi
+
+  base="$(basename "$pkg_name")"
+  expected="$(awk -v n="$base" '$2 == n || $2 == "*" n { print $1; exit }' "$sums_file")"
+  if [ -z "$expected" ]; then
+    error_exit "'$base' is not listed in $sums_file, refusing to install"
+  fi
+  actual="$(sha256_of "$pkg_name")"
+  if [ "$expected" != "$actual" ]; then
+    error_exit "SHA-256 mismatch for '$base': expected $expected, got $actual. Nothing was installed"
+  fi
+  log "SHA-256 matches: $actual"
+}
+
+# Function check_package checks that the archive can be read.
+check_package() {
+  if [ "$uninstall" -eq '1' ]; then
+    return 0
+  fi
+
+  log "Checking package '$pkg_name'"
+  if ! tar -f "$pkg_name" -z -t > /dev/null
+  then
+    error_exit "Error checking '$pkg_name'"
+  fi
+}
+
+# Function is_kept tells whether a file name is one of the settings files.
+is_kept() {
+  for kept in $keep_files; do
+    [ "$1" = "$kept" ] && return 0
+  done
+  return 1
+}
+
+# Function remove_existing removes program files of an old install. The settings
+# and certificates in the directory are not touched.
+remove_existing() {
+  log 'Removing legacy program files...'
+  for f in setup_wizard trusttunnel_endpoint_setup_wizard; do
+    rm -f "${output_dir}/${f}"
+  done
+}
+
+# Function handle_uninstall removes the program from the output directory.
+handle_uninstall() {
+  if [ ! -f "${output_dir}/trusttunnel_endpoint" ]
+  then
+    error_exit "CatTunnel server is not installed in '${output_dir}'. Please specify the correct installation directory"
+  fi
+
+  if pgrep -x "trusttunnel_endpoint" > /dev/null 2>&1
+  then
+    error_exit "The endpoint is currently running, please stop it before uninstalling"
+  fi
+
+  remove_existing
+  rm -f "${output_dir}/trusttunnel_endpoint" "${output_dir}/trusttunnel.service.template" "${output_dir}/LICENSE"
+  log "Program files have been removed from '${output_dir}'. Settings and certificates are left in place"
+
+  if [ -z "$(ls -A "${output_dir}")" ]
+  then
+    rmdir "${output_dir}" 2>/dev/null || log "Cannot remove empty directory '${output_dir}'"
+  fi
+
+  if [ -e "${systemd_service_path}" ]
+  then
+    log "The systemd service ${systemd_service_path} is found. If you want to remove it, do it manually"
+  fi
+}
+
+# Function write_service_template writes the systemd template if the archive has none.
+write_service_template() {
+  tpl="${output_dir}/trusttunnel.service.template"
+  if [ -e "$tpl" ]; then
+    return 0
+  fi
+  cat > "$tpl" <<EOF
+# Service template for the CatTunnel endpoint
+# Copy it to the systemd directory and enable:
+#
+# sudo cp trusttunnel.service.template /etc/systemd/system/trusttunnel.service
+# sudo systemctl daemon-reload
+# sudo systemctl enable --now trusttunnel
+
+[Unit]
+Description=CatTunnel endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${output_dir}
+ExecStart=${output_dir}/trusttunnel_endpoint vpn.toml hosts.toml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  log "Wrote ${tpl}"
+}
+
+# Function unpack unpacks the archive into a temporary directory and copies the
+# files into the output directory one by one. A running binary is replaced by
+# rename, so the old process keeps running until it is restarted. Settings
+# files that already exist are kept.
+unpack() {
+  log "Unpacking '$pkg_name'"
+  unpack_dir="${work_dir}/unpacked"
+  mkdir -p "$unpack_dir"
+  tar -C "$unpack_dir" -f "$pkg_name" -x -z \
+    || error_exit "Cannot unpack '$pkg_name'"
+
+  # The release archive has one top-level directory; accept a flat one too.
+  src_dir="$unpack_dir"
+  top_count="$(ls -A "$unpack_dir" | wc -l)"
+  if [ "$top_count" -eq 1 ] && [ -d "${unpack_dir}/$(ls -A "$unpack_dir")" ]; then
+    src_dir="${unpack_dir}/$(ls -A "$unpack_dir")"
+  fi
+
+  [ -f "${src_dir}/trusttunnel_endpoint" ] \
+    || error_exit "The archive has no trusttunnel_endpoint, nothing was installed"
+  if [ -f "${src_dir}/setup_wizard" ] || [ -f "${src_dir}/trusttunnel_endpoint_setup_wizard" ]; then
+    error_exit "The archive contains a standalone setup wizard. Use the installer from the matching release."
+  fi
+
+  remove_existing
+
+  for path in "$src_dir"/* "$src_dir"/.[!.]*; do
+    [ -e "$path" ] || continue
+    name="$(basename "$path")"
+    if is_kept "$name" && [ -e "${output_dir}/${name}" ]; then
+      log "Keeping existing '${name}'"
+      continue
+    fi
+    if [ -d "$path" ] && [ -e "${output_dir}/${name}" ]; then
+      log "Keeping existing directory '${name}'"
+      continue
+    fi
+    if [ -d "$path" ]; then
+      cp -R "$path" "${output_dir}/${name}"
     else
-      log "Cannot create file in the current directory."
-      error_exit "Cannot proceed without file creation rights."
+      cp -f "$path" "${output_dir}/.${name}.new.$$"
+      mv -f "${output_dir}/.${name}.new.$$" "${output_dir}/${name}"
     fi
-  else
-    # Cleanup the temporary file
-    rm "$tmp_file"
-    if ! curl -fsSL "$url" -o "$pkg_name"; then
-      error_exit "Failed to download $pkg_name: $?"
-    fi
-  fi
-
-  log "TrustTunnel package has been downloaded successfully"
+  done
+  chmod 755 "${output_dir}/trusttunnel_endpoint"
+  write_service_template
+  log "Package has been unpacked successfully"
 }
 
 report_success() {
   echo
   echo "============================================================"
-  echo "  TrustTunnel Endpoint was installed to '${output_dir}'"
+  echo "  CatTunnel server was installed to '${output_dir}'"
+  if [ -x "${output_dir}/trusttunnel_endpoint" ]; then
+    "${output_dir}/trusttunnel_endpoint" --version 2>/dev/null | sed 's/^/  /' || true
+  fi
   echo "============================================================"
   echo
+  if [ "$was_installed" -eq '1' ]; then
+    echo "--- Updated ---"
+    echo
+    echo "Settings and certificates in '${output_dir}' were not changed."
+    echo "A running endpoint still uses the old binary. Restart it when ready:"
+    echo
+    echo "    sudo systemctl restart trusttunnel"
+    echo
+    return 0
+  fi
   echo "--- Continue setup ---"
   echo
   echo "Run the Setup Wizard to continue the endpoint setup:"
@@ -605,12 +576,6 @@ report_success() {
   echo "    cd ${output_dir}"
   echo "    sudo ./trusttunnel_endpoint --setup-wizard"
   echo
-
-  if [ "$os" != 'linux' ]
-  then
-    return 0
-  fi
-
   echo "--- Configure systemd service ---"
   echo
   echo "The '${output_dir}/trusttunnel.service.template' template"
@@ -633,27 +598,35 @@ output_dir=''
 verbose='1'
 cpu=''
 os=''
-version='1.1.0'
+version=''
 uninstall='0'
-remove_command="rm -f"
 is_root='0'
 archive_path=''
 auto_answer=''
 need_download='1'
+work_dir=''
+sums_file=''
+response=''
+was_installed='0'
+current_user="${USER:-$(id -un)}"
 
 parse_opts "$@"
 
 configure
-download
 
-check_package
-
-handle_existing
-
-unpack
-
-if [ -f "${output_dir}/setup_wizard" ] || [ -f "${output_dir}/trusttunnel_endpoint_setup_wizard" ]; then
-  error_exit "The archive contains a standalone setup wizard. Use the installer from the matching release."
+if [ "$uninstall" -eq '1' ]; then
+  handle_uninstall
+  exit 0
 fi
 
+download
+verify_checksum
+check_package
+
+if [ -f "${output_dir}/trusttunnel_endpoint" ]; then
+  was_installed='1'
+  log "CatTunnel server is already present in '${output_dir}', updating"
+fi
+
+unpack
 report_success

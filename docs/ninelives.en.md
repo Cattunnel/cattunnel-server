@@ -1,129 +1,201 @@
-# NineLives (XHTTP protocol 1)
+# NineLives: protocol 1 (internal name XHTTP)
 
-[Русская версия](ninelives.md)
+NineLives carries each tunneled TCP connection as a pair of HTTP/2 streams
+inside one TLS connection, instead of one CONNECT stream. The name NineLives
+is used in user interfaces and documents; the code, the configuration keys and
+the files keep the internal name `xhttp` (`xhttp_enable`, `transport_mode =
+"xhttp"`, `http_xhttp.rs`). The shape of the requests resembles XHTTP of Xray;
+the protocol here is our own, incompatible with it, and carries no brand on the
+wire: the path comes from configuration.
 
-NineLives is the second transport of CatTunnel, next to `CONNECT`. This page is an overview
-for server operators. The exact wire format is in [xhttp-protocol.md](xhttp-protocol.md) (in
-Russian).
+This is an overview with diagrams. The normative text is
+[xhttp-protocol.en.md](xhttp-protocol.en.md) (frame tables, handshake
+transcript, resume proof, limits; the main text is Russian, [xhttp-protocol.md](xhttp-protocol.md)). Where the two disagree, `xhttp-protocol.md`
+and the code win. Related: [connect.en.md](connect.en.md), [cattail.en.md](cattail.en.md),
+[upstream-divergence.en.md](upstream-divergence.en.md).
 
-The config keys say `xhttp` for historical reasons. NineLives is **not** compatible with XHTTP
-from Xray: it has its own framing, its own body encryption and its own resume, and it does not
-accept Xray links or configurations.
+Versions in 1.5.9.5. Only protocol version 1 is implemented: `xhttp_supported_versions`
+must equal `[1]` and any other value fails settings validation. Version 2
+(NineLivesSec, a stronger own cipher and a CDN mode) and version 3 are
+reserved; the endpoint rejects them, and `transport_mode` other than `xhttp` is
+rejected as well. Cipher suite 1 is the only suite.
 
-## How it works
+Russian text is the main one: [ninelives.md](ninelives.md). This English translation follows it.
+
+## 1. Two streams, one connection
 
 ```text
- client                                          server
-   GET  <xhttp_path><sid>   <---- download -------
-   POST <xhttp_path><sid>   ----- upload -------->
-   frames: OPEN, DATA, ACK, FIN, PING, PAD, ...
-   (optional HELLO/HELLO_ACK: X25519 + Ed25519 signature,
-    then the body in AES-128-GCM)
-
- break:
-   new GET/POST pair with the same sid -> server challenge
-   -> RESUME (offsets + HMAC over the token) -> resend of
-      the unacknowledged data (waits xhttp_resume_timeout, 60 s)
+ client                          one TLS connection (h2)               endpoint
+   |                                                                       |
+   |== stream A: GET  /api/v2/<sid>   (downlink) ========================>|
+   |<=============== response 200, body = frames of the downlink ==========|
+   |                                                                       |
+   |== stream B: POST /api/v2/<sid>   (uplink, request body is open) =====>|
+   |   body = frames of the uplink                                          |
+   |                                                                       |
+   |   both carry   x-xhttp-version: 1   and the same credentials          |
 ```
 
-- **Paired requests.** One TCP session of the client uses two HTTP/2 streams on the same path
-  `<xhttp_path><sid>`: a `GET` whose response body carries the download and a `POST` whose
-  request body carries the upload. The session id (`sid`) is 1 to 64 characters from
-  `A-Z a-z 0-9 - _`. Both requests carry `x-xhttp-version: 1`. HTTP authentication is
-  checked before the two halves are paired, and both halves must belong to the same user. A
-  half waits up to 30 s for its pair; at most 1024 sessions may wait.
-- **Frames.** The bodies carry frames: `OPEN` (destination `host:port`), `DATA`, `ACK`,
-  `FIN`, `RST`, `PAD`, `RESUME`, `PING`/`PONG`, `HELLO`/`HELLO_ACK` and
-  `RESUME_TOKEN`. Each frame has a type, a byte offset and a length. Upload bytes are
-  acknowledged only after the destination socket has accepted them; download bytes are kept
-  until the client acknowledges them.
-- **Signed handshake and body encryption (suite 1).** Optional for direct connections. The
-  client sends `HELLO` with an ephemeral X25519 public key and a nonce. The server answers
-  with its own ephemeral X25519 key and an Ed25519 signature over the transcript (protocol
-  version, suite, capabilities, `sid`, both public keys, client nonce), made with the static
-  key `xhttp_secret_key`. The client checks the signature with the server public key it got
-  in its link. HKDF-SHA256 (salt = SHA-256 of the transcript) derives a separate AES-128-GCM
-  key for each direction; the nonce has a direction byte and a per-direction counter, and the
-  `sid` is the associated data. A failed key exchange, signature or decryption never falls
-  back to an unencrypted body. Without encryption the stream is protected by TLS alone.
-- **Resume.** The server gives each TCP session a 32-byte resume token. After the connection
-  drops, the client opens a new `GET`/`POST` pair with the same `sid`; the server sends a
-  fresh challenge, and the client answers with `RESUME`: the offsets it has and an
-  HMAC-SHA256 proof over the token, the `sid`, the offsets and the challenge. The old
-  transport is cancelled only after the proof is checked. An encrypted session always runs a
-  new handshake with new keys before resuming. The server replays unacknowledged download
-  data from the client's offset. `xhttp_resume_timeout` says how long a broken session is
-  kept (60 s by default).
-- **FIN.** The server sends `FIN` with the final download offset and keeps the data until the
-  client acknowledges that offset, then frees the session at once.
-- **Memory budget.** All NineLives buffers are charged to one global budget,
-  `xhttp_memory_limit`. Each new session reserves 256 KiB first; if that does not fit, the
-  request gets HTTP 503 and existing sessions are not evicted. Decoder and replay buffers are
-  reserved before data is copied. A download waits for budget; an upload that cannot reserve
-  space closes its transport without acknowledging the unaccepted bytes, and the session can
-  resume later. TLS, HTTP/2 and kernel buffers are not counted.
+Figure 1. A session is a GET (server to client bytes) and a POST (client to
+server bytes) with the same path. Many sessions share one TLS connection.
 
-Protocol versions 2 and 3, crypto suite 2, the CDN mode and non-zero capability bits are
-reserved and rejected. There is no fallback to another version.
+The session id (SID) is 1 to 64 characters of `A-Z a-z 0-9 - _`. The endpoint
+authenticates each half before pairing, and both halves must belong to one
+user. A half waits for its pair up to 30 seconds; at most 1024 sessions wait.
+A request without exactly one `x-xhttp-version: 1` gets HTTP 400.
 
-## Server configuration
+## 2. Layers
 
-```toml
-# vpn.toml
-xhttp_enable = true
-xhttp_path = "/api/v2/"
-xhttp_secret_key = "<base64 of a 32-byte Ed25519 seed>"
-xhttp_resume_timeout = 60
-# xhttp_memory_limit = 268435456
-# xhttp_unacked_limit = 1048576
+```text
+ destination TCP bytes
+        |
+ +------v-------------------------------------------+
+ | NineLives frames: OPEN DATA ACK FIN RST PAD ...   |  offsets per direction
+ +------+-------------------------------------------+
+        |   suite 1: every frame becomes one record
+ +------v-------------------------------------------+
+ | record: u32 length | AES-128-GCM ciphertext | tag |  AAD = SID
+ +------+-------------------------------------------+
+        |
+ +------v-------------------------------------------+
+ | HTTP/2 DATA of the POST (up) / of the GET (down)  |
+ +------+-------------------------------------------+
+        |
+ +------v-------------------------------------------+
+ | TLS (and, optionally, CatTail outside it)         |
+ +--------------------------------------------------+
 ```
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `xhttp_enable` | `false` | Accept NineLives requests on the main hosts |
-| `xhttp_path` | `"/api/v2/"` | Path prefix; the `sid` is appended to it. Must not overlap `ping_path` or `speedtest_path` |
-| `xhttp_secret_key` | none | Standard base64 of the 32-byte Ed25519 seed that signs `HELLO_ACK`. Without it the server cannot answer `HELLO` |
-| `xhttp_resume_timeout` | `60` | Seconds a broken session is kept for resume; `0` turns resume off |
-| `xhttp_memory_limit` | 1/4 of the smaller of RAM and cgroup limit, clamped to 64..512 MiB (64 MiB if unknown) | Global budget for NineLives buffers, bytes |
-| `xhttp_unacked_limit` | `1048576` | Unacknowledged bytes per session |
-| `xhttp_supported_versions` | `[1]` | Only `[1]` is valid |
-| `transport_mode` | `"xhttp"` | Only `"xhttp"` is valid; `xhttp-cdn` and `sudoku` are reserved |
+Figure 2. Layers of a NineLives session. Body encryption is used when the client
+has the Ed25519 public key of the endpoint; without it frames travel unencrypted
+inside TLS.
 
-`CONNECT` keeps working next to NineLives on the same port.
+## 3. Start of a session
 
-## Key generation
+The downlink answer is sent before the destination is connected, because the key
+exchange is answered in its body.
 
-`xhttp_secret_key` is the raw 32-byte Ed25519 seed in standard base64. The client needs the
-matching 32-byte public key, also in standard base64 (44 characters). With OpenSSL:
-
-```shell
-openssl genpkey -algorithm ed25519 -out xhttp-key.pem
-# xhttp_secret_key for vpn.toml
-openssl pkey -in xhttp-key.pem -outform DER | tail -c 32 | base64
-# public key for the clients
-openssl pkey -in xhttp-key.pem -pubout -outform DER | tail -c 32 | base64
+```text
+ client (POST body)                         endpoint (GET response body)
+   |                                              |
+   |<---------- 200 + x-xhttp-version: 1 ---------|  headers of the GET
+   |-- HELLO  (suite 1, caps 0, X25519 pub, nonce)|  54 bytes, plain frame
+   |<--- HELLO_ACK (X25519 pub, Ed25519 sig) -----|  102 bytes, plain frame
+   |     both sides derive c2s / s2c AES keys     |
+   |-- [OPEN host:port]   (sealed record) ------->|
+   |<-- [RESUME_TOKEN 32 random bytes] (sealed) --|  then the destination is
+   |                                              |  connected
+   |-- [DATA ...] ------------------------------->|
+   |<-------------------------- [DATA ...] -------|
+   |-- [ACK offset] ----------------------------->|  uplink ACK, see section 5
+   |<----------------------- [ACK offset] --------|
 ```
 
-The seed is a secret: whoever has it can impersonate the server to NineLives clients. Keep
-`vpn.toml` readable only by the service.
+Figure 3. Handshake with body encryption. Without the endpoint key HELLO and
+HELLO_ACK are skipped and OPEN is the first frame in the clear. A health check
+sends PING instead of OPEN and gets PONG with the same nonce; it creates no
+resumable session and no RESUME_TOKEN.
 
-## Client side
+Key schedule (suite 1):
 
-The endpoint's `-c` export does not include NineLives settings. The CatTunnel client reads
-them from its `tt://` link (usually written by a subscription service):
+```text
+ X25519(client_eph, server_eph) --> shared secret --+
+                                                     v
+ transcript = "cattunnel-xhttp-handshake-v1" | version | suite | caps
+              | SID | client_pub | server_pub | client_nonce
+ Ed25519 (endpoint static key) signs transcript --> client checks signature
+                                                     |
+ HKDF-SHA256(salt = SHA256(transcript), IKM = shared secret)
+        +--> key c2s  info "cattunnel-xhttp-v1 c2s"   (16 bytes)
+        +--> key s2c  info "cattunnel-xhttp-v1 s2c"   (16 bytes)
+ nonce = direction (1 c2s, 2 s2c) | 00 00 00 | counter u64
+```
 
-| Tag | Value |
-| --- | --- |
-| `0x4F` | NineLives on (boolean) |
-| `0x50` | Path prefix, if it differs from `/api/v2/` |
-| `0x51` | Server Ed25519 public key, base64 (44 characters) |
+Figure 4. Keys of suite 1: X25519, Ed25519, HKDF-SHA256, AES-128-GCM. A failed
+signature, key exchange or AEAD check never falls back to the clear.
 
-Without `0x51`, or with the encryption switch off in the app, the client sends no `HELLO` and
-the body is protected by TLS only. In the CatTunnel app NineLives is in the expert settings of
-a server.
+## 4. Frame
 
-## Status
+```text
+ short form (payload < 32768):
+ +------+-----------------+--------------+-----------------+
+ | type | offset (u64 BE) | length (u16) | payload         |
+ | 1 B  | 8 B             | 2 B          | length bytes    |
+ +------+-----------------+--------------+-----------------+
+ long form (length >= 32768), 15-byte header:
+ +------+-----------------+------------------+------------+---------+
+ | type | offset (u64 BE) | 0x8000 | len>>16 | length u32 | payload |
+ |      |                 | (u16)            | (full len) |         |
+ +------+-----------------+------------------+------------+---------+
+```
 
-NineLives is released with CatTunnel 1.5.9. Session resume of up to 60 s is part of this
-release. Traffic shape (frame sizes and timing compared with a browser) is still being
-tuned, so the transport may change in a later protocol version.
+Figure 5. Frame header, 11 or 15 bytes. Types: 01 OPEN, 02 DATA, 03 ACK, 04 FIN,
+05 RST, 06 PAD (ignored), 07 RESUME, 08 PING, 09 PONG, 0a HELLO, 0b HELLO_ACK,
+0c RESUME_TOKEN. Any other type is an error. The endpoint buffers at most 2 MiB
+per frame; a sealed record holds at most 1 MiB of plaintext. PAD is accepted and
+dropped by the endpoint; the endpoint does not send it in 1.5.9.5.
+
+## 5. Offsets, ACK and FIN
+
+Each direction counts bytes from 0; DATA carries the offset of its first byte,
+so a duplicate is recognised and a gap is an error.
+
+- Uplink ACK: the endpoint confirms client bytes only after the destination
+  socket has accepted them. A confirmation is triggered by 64 KiB of unconfirmed
+  bytes. It travels in the downlink.
+- Downlink ACK: the client confirms received bytes; the endpoint keeps data
+  until confirmed (replay buffer) and stops sending when the window
+  (`xhttp_unacked_limit`, default 1 MiB) is full.
+- FIN carries the final offset of a direction. The client answers a server FIN
+  with an ACK whose payload is exactly `[0x04]` and the same offset.
+
+## 6. Resume
+
+If a TLS connection dies, the session is kept for `xhttp_resume_timeout`
+(default 60 s; 0 turns resume off). The client opens a new GET and POST with the
+same SID and the same user.
+
+```text
+ client                                         endpoint (session kept)
+   |-- GET  /api/v2/<sid> ----------------------->|
+   |<-- 200  x-xhttp-challenge: <32 random bytes> -|  fresh per replacement pair
+   |-- POST /api/v2/<sid>                          |
+   |-- [HELLO] (encrypted sessions: new keys)      |
+   |<-- [HELLO_ACK] --------------------------------|
+   |-- [RESUME up_confirmed | down_received | proof] ->|
+   |        proof = HMAC-SHA256(RESUME_TOKEN, "cattunnel-xhttp-resume-v1"
+   |                 | sid | up_confirmed | down_received | challenge)
+   |<-- downlink bytes from offset down_received  ----|  repeated from the
+   |-- uplink bytes from offset up_confirmed -------->|  replay buffers
+```
+
+Figure 6. Resume. The proof is checked in constant time before the old pumps are
+cancelled; a wrong proof gives HTTP 403 and leaves the old transport running.
+An encrypted session always repeats HELLO and gets new keys and zero counters;
+resuming it in the clear is refused.
+
+## 7. Memory budget
+
+All buffers owned by NineLives (and by CatTail connections) count against
+`xhttp_memory_limit`: one quarter of the smaller of physical memory and the
+cgroup limit, clamped to 64..512 MiB, 64 MiB if unknown. A new session reserves
+256 KiB; when the reserve is refused the endpoint answers HTTP 503 and does not
+evict existing sessions. Metrics: `xhttp_reserved_bytes`,
+`xhttp_memory_rejections_total`.
+
+## 8. Client side
+
+The client core (`core/src/xhttp_*.cpp`, see its documents) opens 2 to 4 TLS
+connections for NineLives, uses the same handshake limiter as CONNECT (3 per
+minute, 2 to 6 s apart) and replaces a connection when its rotation time is due
+or the pool is degraded. The key rotation across servers (9a) and the
+fingerprint profile apply to CONNECT only; NineLives does not take part in 9a.
+
+## 9. Compatibility
+
+- Not compatible with Xray XHTTP or with the official TrustTunnel client: the
+  frames, the cipher and the resume are our own.
+- Off by default (`xhttp_enable = false`). A request on the NineLives path of a
+  decoy-only address is refused as a failed authentication.
+- A client without the endpoint key can still use unencrypted frames inside
+  TLS; the endpoint does not force encryption.

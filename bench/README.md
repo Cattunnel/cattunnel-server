@@ -1,67 +1,80 @@
-# Architecture
+English: [README.en.md](README.en.md)
 
-The benchmark consists of 3 isolated parts:
+# Бенчмарк пропускной способности
 
-- `remote-side` - acts as HTTP servers for the benchmark
-- `middle-box` - acts as a VPN endpoint host, either WireGuard or TrustTunnel
-- `local-side` - acts as a benchmark running host, can establish tunnels to the server
-  residing on the remote side through the VPN endpoint
+Набор принадлежит апстриму ([TrustTunnel/bench](https://github.com/TrustTunnel/TrustTunnel/tree/master/bench)) и в форке не менялся. Он измеряет пропускную способность туннеля TrustTunnel и WireGuard. Образ сервера собирается из корня этого репозитория, то есть из дерева CatTunnel server. Клиент по умолчанию берётся из апстрима (`TrustTunnel/TrustTunnelClient`), а сервер запускается с настройками, которые создаёт мастер: NineLives выключен (`xhttp_enable = false` по умолчанию, `lib/src/settings.rs`). Значит, бенчмарк измеряет туннель CONNECT, а не NineLives и не CatTail.
 
-## How to run
+## Устройство
 
-### Single host
+Бенчмарк состоит из трёх изолированных частей:
 
-1) Build docker images
+- `remote-side`: HTTP-серверы, с которых качают и на которые отдают данные
+- `middle-box`: хост VPN-сервера, WireGuard или TrustTunnel
+- `local-side`: хост, который запускает измерения и поднимает туннель к удалённой стороне через VPN-сервер
+
+```text
+ local-side             middle-box              remote-side
+ (клиент, измерения)    (VPN-сервер)            (HTTP :8080)
+      |   туннель           |                        |
+      |====================>|  обычный трафик        |
+      |                     |----------------------->|
+      |<====================|<-----------------------|
+        WireGuard :51820 или TrustTunnel :4433
+```
+
+Рисунок 1. Три части бенчмарка. Данные идут от local-side через middle-box к remote-side.
+
+## Как запустить
+
+### Один хост
+
+1) Соберите образы:
 
    ```shell
    cd ./bench
    ./single_host.sh build
    ```
 
-   The client repo defaults to `https://github.com/TrustTunnel/TrustTunnelClient.git`.
-   To use a different client repo:
+   Репозиторий клиента по умолчанию: `https://github.com/TrustTunnel/TrustTunnelClient.git`. Другой клиент:
 
    ```shell
    ./single_host.sh build --client=<trusttunnel_client_repo_url>
    ```
 
-   To see the full set of available options run:
+   Все параметры:
 
    ```shell
    ./single_host.sh --help
    ```
 
-2) Run the benchmark
+2) Запустите бенчмарк:
 
    ```shell
    ./single_host.sh run
    ```
 
-   This command runs all the parts of the benchmark on the current host.
+   Команда запускает все части на текущем хосте. Параметры `run`: `--remote_ip`, `--middle_ip` и `--tunnel_type=none|wg|ag|all`. Очистка: `./single_host.sh clean [all]`.
 
-### Separate hosts
+### Отдельные хосты
 
-Assume IP addresses of `host_1`, `host_2` and `host_3` are 1.1.1.1, 2.2.2.2 and 3.3.3.3 respectively.
+Пусть адреса `host_1`, `host_2` и `host_3` равны 203.0.113.1, 203.0.113.2 и 203.0.113.3.
 
-1) Running `host_1` as a remote side
+1) `host_1` как remote-side:
 
    ```shell
-   scp Dockerfile user@1.1.1.1:~
-   scp -r remote-side user@1.1.1.1:~
-   ssh user@1.1.1.1
+   scp Dockerfile user@203.0.113.1:~
+   scp -r remote-side user@203.0.113.1:~
+   ssh user@203.0.113.1
    docker build -t bench-common .
    docker build -t bench-rs ./remote-side
    docker run -d -p 8080:8080 -p 5201:5201 -p 5201:5201/udp bench-rs
    ```
 
-2) Running `host_2` as a middle box
-
-   The endpoint is built from the repository root. Clone the project on the
-   middle-box host:
+2) `host_2` как middle-box. Сервер собирается из корня репозитория, поэтому клонируйте проект на этот хост:
 
    ```shell
-   ssh user@2.2.2.2
-   git clone <TrustTunnel.git> ~/trusttunnel-endpoint
+   ssh user@203.0.113.2
+   git clone https://github.com/Cattunnel/cattunnel-server.git ~/trusttunnel-endpoint
    cd ~/trusttunnel-endpoint
    docker build -t bench-common bench/
    ```
@@ -76,7 +89,7 @@ Assume IP addresses of `host_1`, `host_2` and `host_3` are 1.1.1.1, 2.2.2.2 and 
          bench-mb-wg
        ```
 
-    - TrustTunnel
+    - TrustTunnel (сервер CatTunnel из этого дерева)
 
        ```shell
        docker build \
@@ -88,28 +101,28 @@ Assume IP addresses of `host_1`, `host_2` and `host_3` are 1.1.1.1, 2.2.2.2 and 
          bench-mb-ag
        ```
 
-3) Run the benchmark from `host_3`
+3) Запустите измерения с `host_3`:
 
    ```shell
-   scp Dockerfile user@3.3.3.3:~
+   scp Dockerfile user@203.0.113.3:~
    git clone <TrustTunnelClient.git> ./local-side/trusttunnel/trusttunnel-client
-   scp -r local-side user@3.3.3.3:~
-   ssh user@3.3.3.3
+   scp -r local-side user@203.0.113.3:~
+   ssh user@203.0.113.3
    docker build -t bench-common .
    docker build -t bench-ls ./local-side
    ```
 
-   - No VPN
+   - Без VPN
 
       ```shell
-      ./local-side/bench.sh no-vpn bridge 1.1.1.1 results/no-vpn
+      ./local-side/bench.sh no-vpn bridge 203.0.113.1 results/no-vpn
       ```
 
    - WireGuard
 
       ```shell
       docker build -t bench-ls-wg ./local-side/wireguard
-      ./local-side/bench.sh wg bridge 1.1.1.1 results/wg 2.2.2.2
+      ./local-side/bench.sh wg bridge 203.0.113.1 results/wg 203.0.113.2
       ```
 
    - TrustTunnel
@@ -118,5 +131,5 @@ Assume IP addresses of `host_1`, `host_2` and `host_3` are 1.1.1.1, 2.2.2.2 and 
       docker build \
         --build-arg CLIENT_DIR=trusttunnel-client \
         -t bench-ls-ag ./local-side/trusttunnel
-      ./local-side/bench.sh ag bridge 1.1.1.1 results/ag 2.2.2.2 endpoint.bench
+      ./local-side/bench.sh ag bridge 203.0.113.1 results/ag 203.0.113.2 endpoint.bench
       ```

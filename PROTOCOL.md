@@ -1,89 +1,149 @@
-# TrustTunnel Protocol Specification
+English: [PROTOCOL.en.md](PROTOCOL.en.md)
 
-**Version 1.0**
+# Спецификация протокола TrustTunnel (используется в CatTunnel)
 
-## Abstract
+**Редакция спецификации 1.0** (upstream, 24 декабря 2025)
 
-TrustTunnel is a VPN protocol designed to tunnel network traffic through
-standard HTTP/2 and HTTP/3 (QUIC) connections. By leveraging widely-used web
-protocols, TrustTunnel traffic closely resembles regular HTTPS traffic, making
-it resistant to detection and blocking by network intermediaries.
+CatTunnel, форк [TrustTunnel](https://github.com/TrustTunnel/TrustTunnel),
+использует этот же базовый протокол. Документ описывает общий протокол. Что
+форк добавил поверх него, собрано в разделе 1.4 и в отдельных документах:
+[docs/connect.md](docs/connect.md), [docs/ninelives.md](docs/ninelives.md),
+[docs/cattail.md](docs/cattail.md),
+[docs/upstream-divergence.md](docs/upstream-divergence.md).
 
-This document provides a complete specification of the TrustTunnel protocol,
-enabling independent implementations that are interoperable with existing
-TrustTunnel clients and endpoints.
+Слова ДОЛЖЕН, НЕ ДОЛЖЕН, СЛЕДУЕТ и ВПРАВЕ употребляются как MUST, MUST NOT,
+SHOULD и MAY в RFC 2119. Код endpoint'а лежит в этом репозитории
+(`lib/src/`), код клиента в репозитории [cattunnel](https://github.com/Cattunnel/cattunnel).
 
----
+## Аннотация
 
-## Table of Contents
+TrustTunnel это VPN-протокол, который пропускает сетевой трафик через обычные
+соединения HTTP/2 и HTTP/3 (QUIC). Протокол использует распространённые веб-протоколы,
+поэтому трафик похож на обычный HTTPS, и сетевым посредникам труднее его
+обнаружить и заблокировать.
 
-1. [Introduction](#1-introduction)
-2. [Protocol Overview](#2-protocol-overview)
-3. [Transport Layer](#3-transport-layer)
-4. [Session Establishment](#4-session-establishment)
-5. [TCP Connection Tunneling](#5-tcp-connection-tunneling)
-6. [UDP Multiplexing](#6-udp-multiplexing)
-7. [ICMP Multiplexing](#7-icmp-multiplexing)
-8. [Health Checks](#8-health-checks)
-9. [Authentication](#9-authentication)
-10. [Error Handling](#10-error-handling)
-11. [Wire Formats](#11-wire-formats)
-12. [Security Considerations](#12-security-considerations)
-13. [Implementation Notes](#13-implementation-notes)
-14. [Appendix A: Reserved Pseudo-Hosts](#appendix-a-reserved-pseudo-hosts)
-15. [Appendix B: Example Message Flows](#appendix-b-example-message-flows)
-16. [Appendix C: Version History](#appendix-c-version-history)
-17. [References](#references)
+Документ описывает протокол полностью, чтобы независимые реализации работали
+с существующими клиентами и endpoint'ами.
 
 ---
 
-## 1. Introduction
+## Содержание
 
-### 1.1 Purpose
-
-TrustTunnel provides a mechanism for tunneling arbitrary network traffic (TCP,
-UDP, and ICMP) through encrypted HTTP/2 or HTTP/3 connections. The protocol is
-designed with the following goals:
-
-- **Stealth**: Traffic appears as standard HTTPS, making it difficult to
-distinguish from regular web browsing
-- **Performance**: Efficient multiplexing of multiple connections over a single
-transport session
-- **Reliability**: Built-in session recovery and health checking mechanisms
-- **Flexibility**: Support for both HTTP/2 (over TLS) and HTTP/3 (over QUIC) transports
-
-### 1.2 Terminology
-
-| Term           | Definition                                                           |
-|----------------|----------------------------------------------------------------------|
-| **Client**     | The TrustTunnel client application that initiates connections        |
-| **Endpoint**   | The TrustTunnel server that terminates tunneled connections          |
-| **Session**    | An HTTP/2 or HTTP/3 connection between client and endpoint           |
-| **Stream**     | An individual HTTP stream within a session                           |
-| **Connection** | A tunneled TCP, UDP, or ICMP flow                                    |
-
-### 1.3 Conventions
-
-- All multi-byte integers are transmitted in **network byte order** (big-endian)
-- IP addresses are transmitted in their binary form (4 bytes for IPv4, 16 bytes for IPv6)
-- IPv4 addresses are zero-padded to 16 bytes when transmitted in padded format
+1. [Введение](#1-введение)
+2. [Обзор протокола](#2-обзор-протокола)
+3. [Транспортный уровень](#3-транспортный-уровень)
+4. [Установка сессии](#4-установка-сессии)
+5. [Туннелирование TCP-соединений](#5-туннелирование-tcp-соединений)
+6. [Мультиплексирование UDP](#6-мультиплексирование-udp)
+7. [Мультиплексирование ICMP](#7-мультиплексирование-icmp)
+8. [Проверка живости](#8-проверка-живости)
+9. [Аутентификация](#9-аутентификация)
+10. [Обработка ошибок](#10-обработка-ошибок)
+11. [Форматы на проводе](#11-форматы-на-проводе)
+12. [Замечания по безопасности](#12-замечания-по-безопасности)
+13. [Замечания по реализации](#13-замечания-по-реализации)
+14. [Приложение А: служебные имена](#приложение-а-служебные-имена)
+15. [Приложение Б: примеры обмена](#приложение-б-примеры-обмена)
+16. [Приложение В: история версий](#приложение-в-история-версий)
+17. [Ссылки](#ссылки)
 
 ---
 
-## 2. Protocol Overview
+## 1. Введение
 
-### 2.1 Architecture
+### 1.1 Назначение
+
+TrustTunnel туннелирует произвольный сетевой трафик (TCP, UDP и ICMP) через
+шифрованные соединения HTTP/2 или HTTP/3. Цели протокола:
+
+- **Скрытность**: трафик выглядит как обычный HTTPS, его трудно отличить от
+  просмотра сайтов.
+- **Скорость**: много соединений эффективно мультиплексируются в одной
+  транспортной сессии.
+- **Надёжность**: есть восстановление сессии и проверка живости.
+- **Гибкость**: поддерживаются HTTP/2 (поверх TLS) и HTTP/3 (поверх QUIC).
+
+### 1.2 Термины
+
+| Термин          | Определение                                                         |
+|-----------------|---------------------------------------------------------------------|
+| **Клиент**      | Приложение, которое открывает соединения к endpoint'у               |
+| **Endpoint**    | Сервер, на котором заканчиваются туннелируемые соединения           |
+| **Сессия**      | Соединение HTTP/2 или HTTP/3 между клиентом и endpoint'ом           |
+| **Поток**       | Отдельный HTTP-поток внутри сессии                                  |
+| **Соединение**  | Туннелируемый поток TCP, UDP или ICMP                               |
+
+### 1.3 Соглашения
+
+- Все многобайтовые целые передаются в **сетевом порядке байт** (big-endian).
+- IP-адреса передаются в двоичном виде (4 байта для IPv4, 16 байт для IPv6).
+- В форматах с фиксированной длиной IPv4-адрес дополняется нулями до 16 байт.
+
+### 1.4 CatTunnel и этот протокол
+
+CatTunnel использует этот же протокол: запрос HTTP CONNECT по HTTP/2 или
+HTTP/3, служебные имена `_check`, `_udp2`, `_icmp` и аутентификацию
+`Proxy-Authorization: Basic`. Форматы пакетов UDP и ICMP из разделов 6 и 7
+endpoint CatTunnel разбирает как описано здесь (`lib/src/http_udp_codec.rs`,
+`lib/src/http_icmp_codec.rs`). Отдельного номера версии протокола у форка в
+коде нет. «Редакция 1.0» это номер текста спецификации upstream.
+
+Форк добавил следующее. Формат запросов при этом остаётся прежним.
+
+| Что | Upstream | CatTunnel | Подробнее |
+|---|---|---|---|
+| Ответ 200 на CONNECT к хосту | 200 без заголовков | заголовки веб-сервера: `date`, `server: nginx`, `cache-control`, `x-request-id`, `x-trace-id` | [docs/connect.md](docs/connect.md), раздел 3.1 |
+| Кадры DATA к клиенту | сколько разрешает управление потоком | не больше 4096 байт на потоках CONNECT | [docs/connect.md](docs/connect.md), раздел 3.2 |
+| Заголовки запроса CONNECT от клиента | `user-agent`, `proxy-authorization` | то же и заголовки, которые шлёт браузер | документ `connect-client.md` в репозитории [cattunnel](https://github.com/Cattunnel/cattunnel) |
+| Адрес из `decoy_only_ips_file` | нет | любой запрос туннеля получает отказ, как при неверном пароле | [docs/connect.md](docs/connect.md), раздел 3.4 |
+| Другие способы донести тот же туннель | нет | NineLives, внешний слой CatTail | [docs/ninelives.md](docs/ninelives.md), [docs/cattail.md](docs/cattail.md) |
+
+Полный список отличий: [docs/upstream-divergence.md](docs/upstream-divergence.md).
+Репозитории: клиент [cattunnel](https://github.com/Cattunnel/cattunnel), роутеры
+[cattunnel-router](https://github.com/Cattunnel/cattunnel-router), endpoint
+[cattunnel-server](https://github.com/Cattunnel/cattunnel-server).
+
+```text
+ TCP :443 ---------------------+         TCP, порт CatTail
+                               |                 |
+                               |       +---------v---------+
+                               |       | CatTail: снимает  |
+                               |       | внешний слой      |
+                               |       +---------+---------+
+                               v                 v
+                      +--------------------------------+
+                      | TlsListener: TLS               |
+                      +----------------+---------------+
+                                       v
+                      +--------------------------------+
+                      | HttpDemux: канал по запросу    |
+                      +---+------------+----------+----+
+                          v            v          v
+                       Tunnel        Xhttp     подписка,
+                       (CONNECT)   (NineLives) заглушка, ping,
+                                               speedtest
+```
+
+Рисунок 1. Где транспорты встречаются с endpoint'ом. Туннель CONNECT (этот
+документ) идёт в канал Tunnel. NineLives выбирается в том же разборщике
+запросов, CatTail стоит перед TLS и несёт те же байты TLS.
+
+---
+
+## 2. Обзор протокола
+
+### 2.1 Архитектура
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                        TrustTunnel Client                       │
+│                 CatTunnel or TrustTunnel client                 │
 ├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────-┐  ┌─────────────────────────┐ │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────────┐ │
 │  │ TCP Streams │  │ UDP Stream   │  │ ICMP Stream             │ │
 │  │ (per-conn)  │  │ (multiplexed)│  │ (multiplexed)           │ │
-│  └──────┬──────┘  └──────┬──────-┘  └───────────┬─────────────┘ │
+│  └──────┬──────┘  └──────┬───────┘  └───────────┬─────────────┘ │
 │         │                │                      │               │
-│         └────────────────┼─────────────────────-┘               │
+│         └────────────────┼──────────────────────┘               │
 │                          │                                      │
 │                ┌─────────▼─────────┐                            │
 │                │  HTTP/2 or HTTP/3 │                            │
@@ -109,93 +169,117 @@ transport session
 │                └─────────┬─────────┘                            │
 │         ┌────────────────┼─────────────────────┐                │
 │         │                │                     │                │
-│  ┌──────▼──────┐  ┌──────▼──────-┐  ┌───────────▼─────────────┐ │
+│  ┌──────▼──────┐  ┌──────▼───────┐  ┌───────────▼─────────────┐ │
 │  │ TCP Streams │  │ UDP Stream   │  │ ICMP Stream             │ │
 │  │ (per-conn)  │  │ (multiplexed)│  │ (multiplexed)           │ │
-│  └─────────────┘  └─────────────-┘  └─────────────────────────┘ │
+│  └─────────────┘  └──────────────┘  └─────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
-│                       TrustTunnel Endpoint                      │
+│                CatTunnel or TrustTunnel endpoint                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Connection Model
+Рисунок 2. Слои клиента и endpoint'а. TCP, UDP и ICMP идут в одной сессии
+HTTP/2 или HTTP/3, поверх TLS или QUIC.
 
-TrustTunnel uses different strategies for different protocols:
+### 2.2 Модель соединений
 
-- **TCP**: Each TCP connection uses a dedicated HTTP stream via the CONNECT
-  method
-- **UDP**: All UDP datagrams are multiplexed over a single HTTP stream
-- **ICMP**: All ICMP echo requests/replies are multiplexed over a single HTTP
-  stream
+Для разных протоколов используются разные схемы.
 
----
-
-## 3. Transport Layer
-
-### 3.1 HTTP/2 Transport
-
-When using HTTP/2:
-
-- The client establishes a TLS 1.2+ connection to the endpoint
-- ALPN negotiation MUST select `h2`
-- The initial stream window size is set to **131072 bytes** (Chrome's default)
-- Standard HTTP/2 flow control applies
-
-**TLS Requirements:**
-
-- TLS 1.2 or higher
-- Server certificate verification is REQUIRED
-- SNI (Server Name Indication) MUST be sent
-
-### 3.2 HTTP/3 Transport
-
-When using HTTP/3:
-
-- The client establishes a QUIC connection to the endpoint
-- ALPN negotiation MUST select `h3`
-- QUIC version negotiation follows standard QUIC procedures
-- Default QUIC version: `0x00000001` (RFC 9000)
-
-**QUIC Configuration:**
-
-- Max idle timeout: `2 × (connection_timeout + health_check_timeout)`
-- Standard QUIC flow control applies
-
-### 3.3 Protocol Selection
-
-Clients MAY support automatic protocol selection:
-
-1. Attempt HTTP/3 connection
-2. Fall back to HTTP/2 after a configurable delay (default: 1000ms)
-3. Use whichever protocol establishes first
+- **TCP**: каждое TCP-соединение получает свой HTTP-поток через метод CONNECT.
+- **UDP**: все UDP-датаграммы мультиплексируются в одном HTTP-потоке.
+- **ICMP**: все ICMP-запросы и ответы echo мультиплексируются в одном HTTP-потоке.
 
 ---
 
-## 4. Session Establishment
+## 3. Транспортный уровень
 
-### 4.1 Connection Flow
+### 3.1 Транспорт HTTP/2
 
-1. Client initiates TLS/QUIC handshake with the endpoint
-2. Client verifies endpoint certificate
-3. HTTP/2: Client sends HTTP/2 SETTINGS frame
-4. HTTP/3: Client initiates HTTP/3 session after QUIC handshake
-5. Session is considered established when the first stream can be opened
+При HTTP/2:
 
-### 4.2 Endpoint Discovery
+- клиент устанавливает соединение TLS 1.2 или новее;
+- согласование ALPN ДОЛЖНО выбрать `h2`;
+- начальное окно потока равно **131072 байт** (значение Chrome);
+- действует обычное управление потоком HTTP/2.
 
-Endpoints are identified by:
+Значение 131072 задано в клиенте (`core/src/http2_upstream.cpp`, константа
+`HTTP2_STREAM_INITIAL_WINDOW_SIZE`). У endpoint'а то же значение по умолчанию
+(ключ `initial_stream_window_size` в `[listen_protocols.http2]`, 128 КиБ), а окно
+соединения по умолчанию 8 МиБ (`initial_connection_window_size`).
 
-- **Address**: IP address and port (e.g., `192.0.2.1:443`)
-- **Hostname**: Used for TLS SNI and certificate verification
-- **Remote ID** (optional): Alternative identifier for certificate verification
+Endpoint принимает также ALPN `http/1.1`, но ядро клиента открывает туннель только
+по `h2` или `h3`.
+
+**Требования к TLS:**
+
+- TLS 1.2 или новее (endpoint берёт версии по умолчанию библиотеки rustls);
+- проверка сертификата сервера ОБЯЗАТЕЛЬНА;
+- SNI ДОЛЖЕН отправляться.
+
+### 3.2 Транспорт HTTP/3
+
+При HTTP/3:
+
+- клиент устанавливает соединение QUIC;
+- согласование ALPN ДОЛЖНО выбрать `h3`;
+- версия QUIC по умолчанию `0x00000001` (RFC 9000);
+- действует обычное управление потоком QUIC.
+
+**Настройки QUIC:**
+
+- Клиент задаёт максимальное время простоя `2 × (connection_timeout + health_check_timeout)`.
+  При значениях по умолчанию это 2 × (30 + 7) = 74 секунды (`core/src/http3_upstream.cpp`,
+  `core/include/vpn/vpn.h`).
+- Endpoint задаёт максимальное время простоя равным `client_listener_timeout_secs`,
+  по умолчанию 600 секунд (`lib/src/quic_multiplexer.rs`, `lib/src/settings.rs`).
+
+### 3.3 Выбор протокола
+
+Клиент ВПРАВЕ выбирать протокол автоматически:
+
+1. Попробовать HTTP/3.
+2. Через настраиваемую задержку (по умолчанию 1000 мс) начать запасное подключение по HTTP/2.
+3. Использовать тот протокол, который установился первым.
 
 ---
 
-## 5. TCP Connection Tunneling
+## 4. Установка сессии
 
-### 5.1 Opening a TCP Tunnel
+### 4.1 Порядок подключения
 
-To tunnel a TCP connection, the client sends an HTTP CONNECT request:
+1. Клиент начинает рукопожатие TLS или QUIC с endpoint'ом.
+2. Клиент проверяет сертификат endpoint'а.
+3. HTTP/2: клиент отправляет кадр SETTINGS.
+4. HTTP/3: клиент открывает сессию HTTP/3 после рукопожатия QUIC.
+5. Сессия считается установленной, когда можно открыть первый поток.
+
+```text
+ клиент                                          endpoint
+   |== TLS ClientHello (SNI, ALPN h2) ============>|
+   |<=========== ServerHello, сертификат ===========|  клиент проверяет сертификат
+   |== HTTP/2 SETTINGS ===========================>|
+   |== HEADERS CONNECT host:port ================>|  первый поток открыт:
+   |                                               |  сессия установлена
+```
+
+Рисунок 3. Установка сессии по HTTP/2. По HTTP/3 вместо TLS идёт рукопожатие
+QUIC, затем сессия HTTP/3.
+
+### 4.2 Обнаружение endpoint'а
+
+Endpoint задаётся так:
+
+- **Адрес**: IP-адрес и порт (например, `192.0.2.1:443`).
+- **Имя хоста**: используется для SNI и проверки сертификата.
+- **Remote ID** (необязательно): другой идентификатор для проверки сертификата.
+
+---
+
+## 5. Туннелирование TCP-соединений
+
+### 5.1 Открытие TCP-туннеля
+
+Чтобы туннелировать TCP-соединение, клиент отправляет запрос HTTP CONNECT:
 
 ```http
 CONNECT example.com:443 HTTP/2
@@ -205,69 +289,136 @@ user-agent: <platform> <app_name>
 proxy-authorization: Basic <base64(username:password)>
 ```
 
-**Headers:**
+**Заголовки:**
 
-| Header                | Required | Description                               |
-|-----------------------|----------|-------------------------------------------|
-| `:method`             | Yes      | Must be `CONNECT`                         |
-| `:authority`          | Yes      | Target host and port in format `host:port`|
-| `user-agent`          | Yes      | Platform identifier and application name  |
-| `proxy-authorization` | Yes      | Basic authentication credentials          |
+| Заголовок             | Обязателен | Описание                                         |
+|-----------------------|------------|--------------------------------------------------|
+| `:method`             | Да         | Должен быть `CONNECT`                          |
+| `:authority`          | Да         | Целевой хост и порт в виде `host:port`            |
+| `user-agent`          | Для клиента | Платформа и имя приложения                      |
+| `proxy-authorization` | Да         | Данные Basic-аутентификации                      |
 
-**Authority Format:**
+Клиент шлёт `user-agent` всегда. Endpoint читает его как имя приложения и не
+требует (`lib/src/http_codec.rs`, функция `user_agent`). Запрос без
+`proxy-authorization` при настроенной аутентификации получает отказ по
+аутентификации (раздел 5.2). Заголовок, который не начинается с `Basic `,
+endpoint считает ошибкой запроса и отвечает 502 с `x-warning: 300`.
+
+Клиент CatTunnel добавляет к запросу заголовки, которые шлёт браузер
+(`accept`, `accept-language`, `sec-ch-ua`, `sec-fetch-*` и другие). Endpoint
+лишние заголовки не использует. Список: `connect-client.md` в репозитории
+[cattunnel](https://github.com/Cattunnel/cattunnel).
+
+**Формат authority:**
 
 - IPv4: `192.0.2.1:443`
 - IPv6: `[2001:db8::1]:443`
-- Hostname: `example.com:443`
+- имя хоста: `example.com:443`
 
-### 5.2 Endpoint Response
+### 5.2 Ответ endpoint'а
 
-**Success (200 OK):**
+**Успех (200 OK):**
 
 ```http
 HTTP/2 200
 ```
 
-After receiving a 200 response, the stream becomes a bidirectional byte stream.
-All data sent on the stream is forwarded to the target host, and all data
-received from the target host is sent back on the stream.
+После ответа 200 поток становится двунаправленным потоком байт. Всё, что клиент
+отправляет в поток, уходит на целевой хост. Всё, что приходит с целевого хоста,
+уходит клиенту в тот же поток.
 
-**Authentication Required (407):**
+Upstream отвечает пустым 200. Endpoint CatTunnel добавляет к ответу на туннельный
+CONNECT заголовки веб-сервера (`date`, `server: nginx`,
+`cache-control: no-cache, no-store, must-revalidate`, `x-request-id`, `x-trace-id`)
+и не ставит `content-length` и `transfer-encoding` (`lib/src/http_codec.rs`).
+Ответы на `_check`, `_udp2` и `_icmp` остаются обычным 200.
+
+**Нужна аутентификация (407):**
 
 ```http
 HTTP/2 407
+proxy-authenticate: Basic realm=Authorization Required
 ```
 
-The client MUST close the session and re-authenticate.
+Статус отказа задаёт `auth_failure_status_code` (по умолчанию 407, допустимы 407,
+405, 404 и 403). Для запросов не-CONNECT есть отдельный
+`non_connect_auth_failure_status_code`. Заголовок `proxy-authenticate`
+endpoint добавляет только к 407. Тот же статус получает запрос, который
+превысил лимит соединений, и запрос с адреса из `decoy_only_ips_file` (см.
+[docs/connect.md](docs/connect.md), раздел 3.4).
 
-**Other Errors:**
-The endpoint MAY return other HTTP status codes to indicate errors. The client
-SHOULD treat any non-200 response as a connection failure.
+Клиент, получивший 407 на любом потоке, закрывает сессию с ошибкой
+аутентификации и должен пройти её заново.
 
-### 5.3 Data Transfer
+**Другие ошибки:**
 
-After successful CONNECT:
+Все остальные ошибки endpoint сообщает статусом 502 и заголовком `x-warning`:
 
-- Client sends data → Endpoint forwards to target
-- Target sends data → Endpoint forwards to client
-- Standard HTTP/2 or HTTP/3 flow control applies
-- Stream closure indicates connection termination
+| Причина                         | `x-warning`                                | Дополнительный заголовок          |
+|---------------------------------|---------------------------------------------|-----------------------------------|
+| Ошибка ввода-вывода, прочее     | `300 - Connection failed for some reason`   |                                   |
+| Хост недостижим                 | `301 - ` и текст ошибки                      |                                   |
+| Таймаут подключения             | `302 - ` и текст ошибки                      |                                   |
+| Адрес не маршрутизируется (DNS) | `310 - ` и текст ошибки                      | `x-adguard-vpn-error: <имя хоста>` |
+| Адрес loopback (DNS)            | `311 - ` и текст ошибки                      | `x-adguard-vpn-error: <имя хоста>` |
 
-### 5.4 Connection Closure
+Клиент ДОЛЖЕН считать любой ответ, кроме 200, неудачей подключения.
 
-- **Graceful**: Send HTTP/2 `END_STREAM` flag or HTTP/3 `FIN`
-- **Abrupt**: Send HTTP/2 `RST_STREAM` or HTTP/3 `STOP_SENDING`/`RESET_STREAM`
+```text
+ запрос пришёл на endpoint
+        |
+        v
+ HttpDemux: путь подписки, ping, speedtest, NineLives, заглушка?
+        | да -> свои обработчики
+        | нет (канал Tunnel)
+        v
+ адрес клиента в decoy_only_ips_file?
+        | да -> ответ как при неверном пароле (407 или заданный статус)
+        | нет
+        v
+ проверка Proxy-Authorization (и лимита соединений)
+        | отказ -> 407 или заданный статус
+        v
+ по authority и методу:
+   _check + CONNECT           -> 200, поток закрыт (END_STREAM)
+   _udp2 или _icmp + CONNECT  -> 200, мультиплексор датаграмм
+   _check, _udp2, _icmp без CONNECT -> 502
+   остальное                  -> правила, TCP-подключение, 200, канал байт
+```
+
+Рисунок 4. Что endpoint делает с запросом туннеля. Порядок взят из
+`lib/src/http_downstream.rs` и `lib/src/tunnel.rs`.
+
+### 5.3 Передача данных
+
+После успешного CONNECT:
+
+- данные клиента endpoint пересылает на цель;
+- данные цели endpoint пересылает клиенту;
+- действует обычное управление потоком HTTP/2 или HTTP/3;
+- закрытие потока означает конец соединения.
+
+На потоках CONNECT по HTTP/2 endpoint CatTunnel режет кадры DATA к клиенту до
+4096 байт (`lib/src/http2_codec.rs`, константа `CONNECT_DATA_CHUNK`).
+
+Бездействующее TCP-соединение endpoint закрывает через
+`tcp_connections_timeout_secs` (по умолчанию 604800 секунд, неделя).
+
+### 5.4 Закрытие соединения
+
+- **Штатное**: флаг `END_STREAM` в HTTP/2 или `FIN` в HTTP/3.
+- **Аварийное**: `RST_STREAM` в HTTP/2 или `STOP_SENDING` и `RESET_STREAM` в HTTP/3.
 
 ---
 
-## 6. UDP Multiplexing
+## 6. Мультиплексирование UDP
 
-### 6.1 Overview
+### 6.1 Обзор
 
-All UDP traffic is multiplexed over a single HTTP stream to reduce overhead.
-The stream is established using a CONNECT request to a special pseudo-host.
+Весь UDP-трафик идёт в одном HTTP-потоке, чтобы сократить накладные расходы.
+Поток открывается запросом CONNECT к служебному имени.
 
-### 6.2 Stream Establishment
+### 6.2 Открытие потока
 
 ```http
 CONNECT _udp2 HTTP/2
@@ -277,9 +428,10 @@ user-agent: <platform> _udp2
 proxy-authorization: Basic <base64(username:password)>
 ```
 
-The authority `_udp2` is a reserved identifier for the UDP multiplexer stream.
+Authority `_udp2` задан без порта и зарезервирован под мультиплексор UDP.
+Запрос с другим методом получает 502.
 
-### 6.3 Outgoing Packet Format (Client → Endpoint)
+### 6.3 Исходящий пакет (клиент → endpoint)
 
 ```text
 +----------+----------------+-------------+---------------------+------------------+------------------+----------+---------+
@@ -288,27 +440,31 @@ The authority `_udp2` is a reserved identifier for the UDP multiplexer stream.
 +----------+----------------+-------------+---------------------+------------------+------------------+----------+---------+
 ```
 
-**Field Descriptions:**
+**Поля:**
 
-| Field               | Size     | Description                                      |
-|---------------------|----------|--------------------------------------------------|
-| Length              | 4 bytes  | Total packet length excluding this field         |
-| Source Address      | 16 bytes | Source IP (IPv4 zero-padded to 16 bytes)         |
-| Source Port         | 2 bytes  | Source UDP port                                  |
-| Destination Address | 16 bytes | Destination IP (IPv4 zero-padded to 16 bytes)    |
-| Destination Port    | 2 bytes  | Destination UDP port                             |
-| App Name Length     | 1 byte   | Length of application name (0-255)               |
-| App Name            | L bytes  | Application name string                          |
-| Payload             | N bytes  | UDP payload data                                 |
+| Поле                | Размер   | Описание                                           |
+|---------------------|----------|----------------------------------------------------|
+| Length              | 4 байта  | Длина пакета без этого поля                        |
+| Source Address      | 16 байт  | Адрес источника (IPv4 дополнен нулями до 16 байт)  |
+| Source Port         | 2 байта  | UDP-порт источника                                 |
+| Destination Address | 16 байт  | Адрес назначения (IPv4 дополнен нулями до 16 байт) |
+| Destination Port    | 2 байта  | UDP-порт назначения                                |
+| App Name Length     | 1 байт   | Длина имени приложения (0 до 255)                  |
+| App Name            | L байт   | Имя приложения, UTF-8                              |
+| Payload             | N байт   | Полезная нагрузка UDP                              |
 
-**IPv4 Padding:**
-IPv4 addresses are transmitted as 16 bytes with 12 leading zero bytes:
+Endpoint отбрасывает пакет, если `Length` меньше 37 (размер полей после `Length`
+без имени и нагрузки), если пакет слишком велик или если имя приложения не
+является UTF-8.
+
+**Заполнение IPv4:**
+IPv4-адрес передаётся 16 байтами с 12 нулевыми байтами впереди:
 
 ```text
 00 00 00 00 00 00 00 00 00 00 00 00 XX XX XX XX
 ```
 
-### 6.4 Incoming Packet Format (Endpoint → Client)
+### 6.4 Входящий пакет (endpoint → клиент)
 
 ```text
 +----------+----------------+-------------+---------------------+------------------+---------+
@@ -317,28 +473,32 @@ IPv4 addresses are transmitted as 16 bytes with 12 leading zero bytes:
 +----------+----------------+-------------+---------------------+------------------+---------+
 ```
 
-Note: Incoming packets do not include the application name field.
+В пакетах от endpoint'а к клиенту поля имени приложения нет.
 
-### 6.5 Connection Tracking
+### 6.5 Учёт соединений
 
-The endpoint tracks UDP "connections" by the 4-tuple:
+Endpoint ведёт учёт UDP-«соединений» по четвёрке:
 
-- Source Address
-- Source Port
-- Destination Address
-- Destination Port
+- адрес источника;
+- порт источника;
+- адрес назначения;
+- порт назначения.
 
-UDP connections have a default timeout of **120 seconds** of inactivity.
+Бездействующее UDP-«соединение» endpoint закрывает через
+`udp_connections_timeout_secs`, по умолчанию **300 секунд**.
 
 ---
 
-## 7. ICMP Multiplexing
+## 7. Мультиплексирование ICMP
 
-### 7.1 Overview
+### 7.1 Обзор
 
-ICMP echo requests (ping) are multiplexed over a single HTTP stream, similar to UDP.
+ICMP-запросы echo (ping) мультиплексируются в одном HTTP-потоке, как и UDP.
+Endpoint обслуживает их, только если в его настройках есть раздел `[icmp]`.
+Без него запрос на ICMP не обслуживается (`lib/src/tunnel.rs`, сообщение
+«ICMP forwarding isn't set up»).
 
-### 7.2 Stream Establishment
+### 7.2 Открытие потока
 
 ```http
 CONNECT _icmp HTTP/2
@@ -348,7 +508,7 @@ user-agent: <platform> _icmp
 proxy-authorization: Basic <base64(username:password)>
 ```
 
-### 7.3 Echo Request Format (Client → Endpoint)
+### 7.3 Запрос echo (клиент → endpoint)
 
 ```text
 +----------+---------------------+-----------------+---------------+-----------+
@@ -357,17 +517,20 @@ proxy-authorization: Basic <base64(username:password)>
 +----------+---------------------+-----------------+---------------+-----------+
 ```
 
-**Field Descriptions:**
+**Поля:**
 
-| Field               | Size     | Description                         |
-|---------------------|----------|-------------------------------------|
-| ID                  | 2 bytes  | ICMP identifier                     |
-| Destination Address | 16 bytes | Target IP (IPv4 zero-padded)        |
-| Sequence Number     | 2 bytes  | ICMP sequence number                |
-| TTL/Hop Limit       | 1 byte   | IP TTL or IPv6 hop limit            |
-| Data Size           | 2 bytes  | Size of echo data (not transmitted) |
+| Поле                | Размер   | Описание                                       |
+|---------------------|----------|------------------------------------------------|
+| ID                  | 2 байта  | Идентификатор ICMP                             |
+| Destination Address | 16 байт  | Адрес цели (IPv4 дополнен нулями)              |
+| Sequence Number     | 2 байта  | Порядковый номер ICMP                          |
+| TTL/Hop Limit       | 1 байт   | TTL IP или предел переходов IPv6               |
+| Data Size           | 2 байта  | Размер данных echo (сами данные не передаются) |
 
-### 7.4 Echo Reply Format (Endpoint → Client)
+Сами данные echo клиент не передаёт: endpoint заполняет их случайными байтами
+заявленного размера.
+
+### 7.4 Ответ (endpoint → клиент)
 
 ```text
 +----------+----------------+--------+--------+-----------------+
@@ -376,258 +539,319 @@ proxy-authorization: Basic <base64(username:password)>
 +----------+----------------+--------+--------+-----------------+
 ```
 
-**Field Descriptions:**
+**Поля:**
 
-| Field             | Size    | Description                                       |
-|-------------------|---------|---------------------------------------------------|
-| ID                | 2 bytes | ICMP identifier (matches request)                 |
-| Source Address    | 16 bytes| Responding host IP                                |
-| Type              | 1 byte  | ICMP type (0 = echo reply, 3 = unreachable, etc.) |
-| Code              | 1 byte  | ICMP code                                         |
-| Sequence Number   | 2 bytes | ICMP sequence number (matches request)            |
+| Поле            | Размер   | Описание                                                   |
+|-----------------|----------|------------------------------------------------------------|
+| ID              | 2 байта  | Идентификатор ICMP (как в запросе)                         |
+| Source Address  | 16 байт  | Адрес ответившего хоста                                    |
+| Type            | 1 байт   | Тип ICMP (IPv4: 0 эхо-ответ, 3 адрес недостижим, 11 время истекло) |
+| Code            | 1 байт   | Код ICMP                                                   |
+| Sequence Number | 2 байта  | Порядковый номер ICMP (как в запросе)                      |
+
+Ответом на запрос может быть эхо-ответ или ICMP-сообщение об ошибке с вложенным
+запросом echo.
 
 ---
 
-## 8. Health Checks
+## 8. Проверка живости
 
-### 8.1 Purpose
+### 8.1 Назначение
 
-Health checks verify that the session is still functional and can process requests.
+Проверка живости показывает, что сессия работает и способна обрабатывать запросы.
 
-### 8.2 Health Check Request
+### 8.2 Запрос
 
-The client sends a CONNECT request to a special pseudo-host:
+Клиент отправляет CONNECT к служебному имени:
 
 ```http
 CONNECT _check HTTP/2
 :method: CONNECT
 :authority: _check
-user-agent: <platform>
+user-agent: <platform> unknown
 proxy-authorization: Basic <base64(username:password)>
 ```
 
-### 8.3 Health Check Response
+Имя приложения при проверке пустое, и клиент подставляет в `user-agent` слово
+`unknown`.
 
-- **200 OK**: Session is healthy
-- **407**: Authentication failure
-- **Other**: Session may be unhealthy
+### 8.3 Ответ
 
-### 8.4 Health Check Timing
+- **200 OK**: сессия жива. Endpoint сразу закрывает поток (`END_STREAM`).
+- **407**: ошибка аутентификации.
+- **Другое**: сессия, возможно, нездорова.
+- Запрос `_check` с методом не CONNECT получает 502.
 
-- Default health check timeout: **7000ms**
-- Health checks are triggered when:
-    - No data has been received for `timeout_ms` duration
-    - The client explicitly requests a health check
-- Receiving any data from the endpoint cancels pending health checks
+### 8.4 Время проверки
+
+- Таймаут проверки по умолчанию: **7000 мс**.
+- Клиент выдаёт проверку после открытия соединения или отправки данных, если с
+  предыдущей прошло не меньше `timeout_ms` (по умолчанию 30 секунд), и при
+  пробуждении устройства.
+- Любые данные от endpoint'а отменяют ожидающую проверку.
+- Если проверка не подтверждена за таймаут, клиент начинает восстановление
+  сессии (раздел 10.3).
+
+Клиент CatTunnel использует `_check` ещё и как keepalive: endpoint ждёт
+следующий запрос на соединении не дольше `client_listener_timeout_secs` (по
+умолчанию 600 секунд), а крошечный CONNECT на `_check` это ожидание
+перезапускает. Подробнее: [docs/connect.md](docs/connect.md), раздел 6.
 
 ---
 
-## 9. Authentication
+## 9. Аутентификация
 
-### 9.1 Basic Authentication
+### 9.1 Basic-аутентификация
 
-TrustTunnel uses HTTP Basic Authentication:
+TrustTunnel использует HTTP Basic:
 
 ```text
 proxy-authorization: Basic <credentials>
 ```
 
-Where `<credentials>` is:
+где `<credentials>` это
 
 ```text
 base64(username + ":" + password)
 ```
 
-### 9.2 Authentication Errors
+### 9.2 Ошибки аутентификации
 
-| HTTP Status | Error Code      | Description                          |
-|-------------|-----------------|--------------------------------------|
-| 407         | `AUTH_REQUIRED` | Invalid or expired credentials       |
+| Статус HTTP | Код ошибки      | Описание                                   |
+|-------------|-----------------|--------------------------------------------|
+| 407         | `AUTH_REQUIRED` | Неверные или просроченные учётные данные   |
 
-When receiving a 407 response or a GOAWAY frame with error code indicating authentication failure, the client MUST:
+Статус отказа можно изменить настройкой `auth_failure_status_code` (раздел 5.2).
+Ядро клиента распознаёт отказ по аутентификации только по статусу 407
+(`core/src/http2_upstream.cpp`), поэтому другой статус годится лишь для клиентов,
+которым нужна маскировка под обычный сайт.
 
-1. Close the current session
-2. Obtain new credentials (if possible)
-3. Establish a new session
+Получив ответ 407, клиент ДОЛЖЕН:
 
----
-
-## 10. Error Handling
-
-### 10.1 HTTP/2 Error Codes
-
-| Error Code       | Meaning                    |
-|------------------|----------------------------|
-| `NO_ERROR` (0x0) | Graceful shutdown          |
-| `CANCEL` (0x8)   | Stream cancelled by client |
-| Custom: `0x1F`   | Authentication required    |
-
-### 10.2 HTTP/3 Error Codes
-
-| Error Code                     | Meaning                          |
-|--------------------------------|----------------------------------|
-| `H3_NO_ERROR` (0x100)          | Graceful shutdown                |
-| `H3_REQUEST_CANCELLED` (0x10c) | Stream cancelled                 |
-| Custom: `0x1F`                 | Authentication required          |
-
-### 10.3 Session Recovery
-
-When a session is lost:
-
-1. Client enters recovery mode
-2. Exponential backoff between reconnection attempts:
-   - Initial interval: **1000ms**
-   - Backoff rate: **1.3×**
-   - Location update period: **10000ms**
-3. New connections during recovery:
-   - If killswitch enabled: Queue or reject
-   - If killswitch disabled: Route directly (bypass)
+1. Закрыть текущую сессию.
+2. Получить новые учётные данные (если возможно).
+3. Установить новую сессию.
 
 ---
 
-## 11. Wire Formats
+## 10. Обработка ошибок
 
-### 11.1 Integer Encoding
+### 10.1 Коды ошибок HTTP/2
 
-All integers are encoded in **network byte order** (big-endian):
+| Код ошибки        | Значение                  |
+|-------------------|---------------------------|
+| `NO_ERROR` (0x0)  | Штатное завершение        |
+| `CANCEL` (0x8)    | Поток отменён клиентом    |
+| Свой: `0x64`      | Нужна аутентификация      |
+
+В версии спецификации upstream свой код указан как `0x1F`. В коде клиента
+CatTunnel он равен `0x64` (`net/include/net/http_session.h`), и клиент при
+GOAWAY с этим кодом считает сессию отклонённой по аутентификации. Endpoint этого
+репозитория такой код не отправляет: отказ по аутентификации он передаёт
+статусом ответа (раздел 5.2).
+
+### 10.2 Коды ошибок HTTP/3
+
+| Код ошибки                       | Значение                  |
+|----------------------------------|---------------------------|
+| `H3_NO_ERROR` (0x100)            | Штатное завершение        |
+| `H3_REQUEST_CANCELLED` (0x10c)   | Поток отменён             |
+| Свой: `0x64`                     | Нужна аутентификация      |
+
+### 10.3 Восстановление сессии
+
+Когда сессия потеряна:
+
+1. Клиент переходит в режим восстановления.
+2. Между попытками переподключения интервал растёт по экспоненте:
+   - начальный интервал: **1000 мс**;
+   - коэффициент роста: **1.3**;
+   - период обновления локации: **10000 мс**;
+   - число попыток: **30** (после них клиент переходит в состояние «отключён»
+     с ошибкой «локация недоступна»).
+3. Новые соединения во время восстановления:
+   - если killswitch включён: не направляются напрямую;
+   - если killswitch выключен: направляются напрямую, в обход туннеля.
+
+```text
+ сессия потеряна
+      |
+      v
+ попытка 1 --1000 мс--> попытка 2 --(x1.3)--> попытка 3 --(x1.3)--> ... до 30 попыток
+      |
+      +-- каждые 10000 мс при долгом восстановлении: заново выбрать endpoint
+      |
+      +-- killswitch выключен: новые соединения идут напрямую
+          killswitch включён: новые соединения напрямую не идут
+```
+
+Рисунок 5. Восстановление сессии. Значения по умолчанию из
+`core/include/vpn/vpn.h`.
+
+---
+
+## 11. Форматы на проводе
+
+### 11.1 Кодирование целых
+
+Все целые кодируются в **сетевом порядке байт** (big-endian):
 
 ```text
 uint16: [MSB][LSB]
 uint32: [MSB][...][...][LSB]
 ```
 
-### 11.2 IP Address Encoding
+### 11.2 Кодирование IP-адресов
 
-**IPv4 (padded to 16 bytes):**
-
-```text
-00 00 00 00 00 00 00 00 00 00 00 00 [4 bytes IPv4]
-```
-
-**IPv6 (16 bytes):**
+**IPv4 (дополнен до 16 байт):**
 
 ```text
-[16 bytes IPv6]
+00 00 00 00 00 00 00 00 00 00 00 00 [4 байта IPv4]
 ```
 
-**Detection:**
-An address is IPv4 if the first 12 bytes are zero AND it's not `::1`
-(IPv6 loopback).
+**IPv6 (16 байт):**
 
-### 11.3 Authority String Format
+```text
+[16 байт IPv6]
+```
 
-The `:authority` header uses these formats:
+**Определение:**
+Endpoint считает адрес IPv4, если его первые 12 байт нулевые. В тексте upstream
+сказано, что для `::1` (loopback IPv6) исключение, но в коде endpoint'а такого
+исключения нет (`lib/src/net_utils.rs`, функция `get_fixed_size_ip`): адрес
+`::1` был бы прочитан как IPv4-адрес `0.0.0.1`.
 
-| Type     | Format           | Example             |
-|----------|------------------|---------------------|
-| IPv4     | `address:port`   | `192.0.2.1:443`     |
-| IPv6     | `[address]:port` | `[2001:db8::1]:443` |
-| Hostname | `hostname:port`  | `example.com:443`   |
+### 11.3 Формат authority
+
+Заголовок `:authority` имеет такие формы:
+
+| Тип        | Формат           | Пример              |
+|------------|------------------|---------------------|
+| IPv4       | `address:port`   | `192.0.2.1:443`     |
+| IPv6       | `[address]:port` | `[2001:db8::1]:443` |
+| Имя хоста  | `hostname:port`  | `example.com:443`   |
+
+Служебные имена `_udp2`, `_icmp` и `_check` передаются без порта.
 
 ---
 
-## 12. Security Considerations
+## 12. Замечания по безопасности
 
-### 12.1 Transport Security
+### 12.1 Защита транспорта
 
-- All traffic MUST be encrypted using TLS 1.2+ or QUIC
-- Certificate verification MUST be performed
-- Clients SHOULD support certificate pinning
+- Весь трафик ДОЛЖЕН шифроваться TLS 1.2 или новее либо QUIC.
+- Проверка сертификата ДОЛЖНА выполняться.
+- Клиентам СЛЕДУЕТ поддерживать закрепление сертификата.
 
-### 12.2 Credential Security
+### 12.2 Защита учётных данных
 
-- Credentials are transmitted in every CONNECT request
-- Base64 encoding provides no security; TLS provides confidentiality
-- Implementations SHOULD support credential rotation
+- Учётные данные передаются в каждом запросе CONNECT.
+- Base64 не защищает: конфиденциальность даёт TLS.
+- Реализациям СЛЕДУЕТ поддерживать смену учётных данных.
 
-### 12.3 Traffic Analysis Resistance
+### 12.3 Устойчивость к анализу трафика
 
-TrustTunnel provides some resistance to traffic analysis:
+TrustTunnel даёт некоторую устойчивость к анализу трафика:
 
-- Traffic appears as standard HTTPS
-- Multiple connections are multiplexed
-- However, traffic patterns may still be distinguishable
+- трафик выглядит как обычный HTTPS;
+- несколько соединений мультиплексируются;
+- но профили трафика всё же могут отличаться.
 
-### 12.4 Endpoint Trust
+CatTunnel добавляет меры против распознавания (ответ 200 как у веб-сервера,
+кадры DATA по 4096 байт, заголовки браузера, TLS-профиль браузера, внешний слой
+CatTail). Гарантии это не даёт: профиль трафика всё ещё может выдать туннель.
 
-- The endpoint can see all tunneled traffic (decrypted at endpoint)
-- End-to-end encryption (e.g., HTTPS within tunnel) provides additional protection
-- Users should only connect to trusted endpoints
+### 12.4 Доверие к endpoint'у
+
+- Endpoint видит весь туннелируемый трафик (расшифрованный на endpoint'е).
+- Сквозное шифрование (например, HTTPS внутри туннеля) защищает дополнительно.
+- Подключаться следует только к доверенным endpoint'ам.
 
 ---
 
-## 13. Implementation Notes
+## 13. Замечания по реализации
 
-### 13.1 Flow Control
+### 13.1 Управление потоком
 
 **HTTP/2:**
 
-- Respect stream and connection window sizes
-- Initial stream window: 131072 bytes
-- Send WINDOW_UPDATE frames appropriately
+- Соблюдать окна потока и соединения.
+- Начальное окно потока: 131072 байт.
+- Отправлять кадры WINDOW_UPDATE своевременно.
 
 **HTTP/3:**
 
-- Use QUIC flow control mechanisms
-- Monitor stream capacity before sending
+- Использовать управление потоком QUIC.
+- Перед отправкой проверять ёмкость потока.
 
-### 13.2 Connection Buffering
+### 13.2 Буферизация соединений
 
-Implementations SHOULD buffer data when:
+Реализациям СЛЕДУЕТ буферизовать данные, когда:
 
-- Flow control prevents immediate sending
-- The client is temporarily unable to receive
+- управление потоком не даёт отправить их сразу;
+- клиент временно не может принимать.
 
-Buffer limits:
+Пределы буфера в ядре клиента:
 
-- Memory buffer threshold: Configurable (default varies)
-- File-based buffering for large buffers
+- порог памяти задаётся настройкой (по умолчанию `DEFAULT_CONNECTION_MEMORY_BUFFER_SIZE`);
+- буфер в файле до 4 МиБ (`core/include/vpn/vpn.h`).
 
-### 13.3 Timeouts
+### 13.3 Таймауты
 
-| Timeout              | Default | Description                           |
-|----------------------|---------|---------------------------------------|
-| Connection timeout   | 30s     | Time to establish endpoint connection |
-| Health check timeout | 7s      | Time to receive health check response |
-| TCP timeout          | 7200s   | Idle timeout for TCP connections      |
-| UDP timeout          | 120s    | Idle timeout for UDP "connections"    |
+| Таймаут                         | По умолчанию | Описание                                                  |
+|---------------------------------|--------------|-----------------------------------------------------------|
+| Подключение клиента к endpoint'у | 30 с        | Время на установку соединения с endpoint'ом               |
+| Подключение endpoint'а к цели   | 30 с         | `connection_establishment_timeout_secs`                   |
+| Проверка живости                | 7 с          | Время на ответ на проверку                                |
+| Простой TCP                     | 604800 с     | Простой TCP-соединений (неделя, клиент и endpoint)        |
+| Простой UDP                     | 300 с        | Простой UDP-«соединений» (клиент и endpoint)              |
+| Ожидание запроса на сессии      | 600 с        | `client_listener_timeout_secs` endpoint'а                |
+| Рукопожатие TLS                 | 10 с         | `tls_handshake_timeout_secs` endpoint'а                   |
 
-### 13.4 Split Tunneling
+Значения в спецификации upstream (простой TCP 7200 с, UDP 120 с) в коде
+CatTunnel другие: см. таблицу.
 
-Clients MAY implement split tunneling:
+### 13.4 Раздельное туннелирование
 
-- **General mode**: Route all traffic except exclusions through endpoint
-- **Selective mode**: Route only specified traffic through endpoint
+Клиенты ВПРАВЕ реализовать раздельное туннелирование:
 
-Exclusions can be specified as:
+- **Общий режим** (`VPN_MODE_GENERAL`): через endpoint идёт всё, кроме исключений.
+- **Выборочный режим** (`VPN_MODE_SELECTIVE`): через endpoint идёт только то, что
+  указано в списке.
 
-- Domain names (with wildcard support: `*.example.com`)
-- IP addresses
-- CIDR ranges
+Исключения задаются так:
 
-### 13.5 DNS Handling
+- имена доменов (`example.com` покрывает домен и его поддомен `www`, `*.example.com`
+  покрывает любые поддомены, но не сам домен);
+- IP-адреса (с портом или без);
+- диапазоны CIDR;
+- порт для любого адреса (`*:443`).
 
-Clients MAY intercept DNS queries and:
+### 13.5 Обработка DNS
 
-- Route them through the tunnel
-- Use custom DNS upstreams (DoH, DoT, DoQ)
-- Perform local resolution for excluded domains
+Клиенты ВПРАВЕ перехватывать DNS-запросы и:
+
+- направлять их через туннель;
+- использовать свои DNS-серверы (`tls://`, `https://`, `quic://`, `sdns://`);
+- разрешать исключённые домены локально.
 
 ---
 
-## Appendix A: Reserved Pseudo-Hosts
+## Приложение А: служебные имена
 
-| Host     | Port | Purpose                           |
-|----------|------|-----------------------------------|
-| `_udp2`  | 0    | UDP multiplexer stream            |
-| `_icmp`  | 0    | ICMP multiplexer stream           |
-| `_check` | 0    | Health check stream               |
+| Имя      | Порт              | Назначение                       |
+|----------|-------------------|----------------------------------|
+| `_udp2`  | нет (authority без порта) | Поток мультиплексора UDP |
+| `_icmp`  | нет (authority без порта) | Поток мультиплексора ICMP |
+| `_check` | нет (authority без порта) | Проверка живости         |
+
+Все три имени принимаются только с методом CONNECT, с другим методом endpoint отвечает 502.
 
 ---
 
-## Appendix B: Example Message Flows
+## Приложение Б: примеры обмена
 
-### B.1 TCP Connection
+### Б.1 TCP-соединение
 
 ```text
 Client                                    Endpoint                              Target
@@ -643,7 +867,9 @@ Client                                    Endpoint                              
    |    ...                                   |    ...                             |
 ```
 
-### B.2 UDP Datagram
+Рисунок 6. Открытие TCP-туннеля и первые данные.
+
+### Б.2 UDP-датаграмма
 
 ```text
 Client                                    Endpoint                              Target
@@ -655,20 +881,26 @@ Client                                    Endpoint                              
    |<---[UDP Packet: dst→src, response]-------|<---UDP datagram--------------------|
 ```
 
----
-
-## Appendix C: Version History
-
-| Version | Date          | Changes                           |
-|---------|---------------|-----------------------------------|
-| 1.0     | Dec 24, 2025  | Initial public specification      |
+Рисунок 7. Открытие потока UDP и обмен датаграммами.
 
 ---
 
-## References
+## Приложение В: история версий
 
-- [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000) - QUIC: A UDP-Based Multiplexed and Secure Transport
-- [RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114) - HTTP/3
-- [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113) - HTTP/2
-- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231) - HTTP/1.1 Semantics and Content
-- [RFC 7235](https://datatracker.ietf.org/doc/html/rfc7235) - HTTP/1.1 Authentication
+| Версия | Дата             | Изменения                                         |
+|--------|------------------|---------------------------------------------------|
+| 1.0    | 24 декабря 2025  | Первая публичная спецификация (upstream)          |
+
+Собственной нумерации версий протокола у CatTunnel в коде нет.
+
+---
+
+## Ссылки
+
+- [RFC 9000](https://datatracker.ietf.org/doc/html/rfc9000): QUIC
+- [RFC 9114](https://datatracker.ietf.org/doc/html/rfc9114): HTTP/3
+- [RFC 9113](https://datatracker.ietf.org/doc/html/rfc9113): HTTP/2
+- [RFC 7231](https://datatracker.ietf.org/doc/html/rfc7231): семантика HTTP/1.1
+- [RFC 7235](https://datatracker.ietf.org/doc/html/rfc7235): аутентификация HTTP/1.1
+- [TrustTunnel (upstream)](https://github.com/TrustTunnel/TrustTunnel)
+- [CatTunnel](https://github.com/Cattunnel/cattunnel), [cattunnel-router](https://github.com/Cattunnel/cattunnel-router), [cattunnel-server](https://github.com/Cattunnel/cattunnel-server)

@@ -1,43 +1,52 @@
+English: [CERT_RENEWAL.en.md](CERT_RENEWAL.en.md)
 
-# Let's encrypt certificate renewal
+# Продление сертификата Let's Encrypt
 
-## Table of contents
+## Содержание
 
-- [Prerequisites](#prerequisites)
-- [Install Certbot](#install-certbot)
-- [Issue the certificate](#issue-the-certificate)
-    - [Option A: standalone (recommended if nothing is listening on port 80)](#option-a-standalone-recommended-if-nothing-is-listening-on-port-80)
-    - [Option B: webroot (recommended if you already have an HTTP server)](#option-b-webroot-recommended-if-you-already-have-an-http-server)
-- [Configure TrustTunnel to use the Certbot certificate](#configure-trusttunnel-to-use-the-certbot-certificate)
-- [Enable automatic renewal](#enable-automatic-renewal)
-- [Ensure TrustTunnel reloads the renewed certificate](#ensure-trusttunnel-reloads-the-renewed-certificate)
-- [Test renewal](#test-renewal)
-- [Troubleshooting](#troubleshooting)
+- [Что нужно заранее](#что-нужно-заранее)
+- [Установка Certbot](#установка-certbot)
+- [Выпуск сертификата](#выпуск-сертификата)
+    - [Вариант А: standalone](#вариант-а-standalone)
+    - [Вариант Б: webroot](#вариант-б-webroot)
+- [Сертификат Certbot в настройках сервера](#сертификат-certbot-в-настройках-сервера)
+- [Автоматическое продление](#автоматическое-продление)
+- [Как сервер подхватывает новый сертификат](#как-сервер-подхватывает-новый-сертификат)
+- [Проверка продления](#проверка-продления)
+- [Если что-то не работает](#если-что-то-не-работает)
 
-TrustTunnel endpoint needs a valid TLS certificate to work. The `trusttunnel_endpoint --setup-wizard` command can help you generate a certificate automatically, but for a long-lived setup you should use Let's Encrypt with [Certbot][certbot] and enable automated renewal.
+Сервер CatTunnel работает только с действующим TLS-сертификатом. Мастер `trusttunnel_endpoint --setup-wizard` умеет выпустить его сам, но для долгой работы лучше взять Let's Encrypt через [Certbot][certbot] и включить автоматическое продление. Если сертификат Let's Encrypt уже выпущен без Certbot, выпустите его заново через Certbot, иначе он не будет продлеваться сам.
 
-If you previously generated a Let's Encrypt certificate without Certbot, re-issue it with Certbot so it can be renewed automatically.
-
-This manual describes a practical setup that:
-
-- **Issues** a certificate via Certbot.
-- **Configures TrustTunnel** to use Certbot-managed certificate files.
-- **Ensures renewal is automatic**.
-- **Verifies** renewal via a dry run.
+Порядок действий тот же, что в TrustTunnel ([оригинал](https://github.com/TrustTunnel/TrustTunnel/blob/master/CERT_RENEWAL.md)): сервер читает сертификат и ключ из `hosts.toml` так же, как endpoint TrustTunnel. Имена бинарника `trusttunnel_endpoint` и службы `trusttunnel` в форке остались прежними (см. [README](README.md)).
 
 [certbot]: https://eff-certbot.readthedocs.io/en/stable/
 
-## Prerequisites
+```text
+ Certbot (таймер)           Let's Encrypt            CatTunnel server
+       |  1. certbot renew        |                        |
+       |------------------------->|                        |
+       |  2. проверка HTTP-01     |                        |
+       |<-------------------------|  порт 80/tcp           |
+       |  3. новый сертификат     |                        |
+       |<-------------------------|                        |
+       |  4. обновляет файлы в /etc/letsencrypt/live/      |
+       |  5. deploy hook: systemctl restart trusttunnel -->|
+       |                          |   6. читает новые файлы|
+```
 
-- A public DNS name (A/AAAA record) pointing to the endpoint.
-- Port **80/tcp** reachable from the Internet during issuance/renewal (HTTP-01 validation).
-- Root access on the endpoint.
+Рисунок 1. Продление: Certbot обновляет файлы, deploy hook перезапускает службу, сервер читает новые файлы.
 
-Note: This guide uses HTTP-01. If you need a wildcard certificate, use DNS-01 instead.
+## Что нужно заранее
 
-## Install Certbot
+- Публичное DNS-имя (запись A/AAAA), которое указывает на сервер.
+- Порт **80/tcp**, доступный из интернета на время выпуска и продления (проверка HTTP-01).
+- Доступ root на сервере.
 
-Use the installation method recommended for your distribution. Examples:
+Руководство использует HTTP-01. Для wildcard-сертификата нужен DNS-01.
+
+## Установка Certbot
+
+Ставьте способом, который рекомендует ваш дистрибутив. Пример:
 
 ```bash
 # Debian/Ubuntu
@@ -45,38 +54,38 @@ sudo apt update
 sudo apt install -y certbot
 ```
 
-## Issue the certificate
+## Выпуск сертификата
 
-Choose one of the modes below.
+Выберите один из режимов.
 
-### Option A: standalone (recommended if nothing is listening on port 80)
+### Вариант А: standalone
 
-Certbot will temporarily start its own web server on port 80.
+Подходит, если на порту 80 ничего не слушает. Certbot ненадолго поднимет свой веб-сервер.
 
 ```bash
 sudo certbot certonly --standalone -d example.com
 ```
 
-### Option B: webroot (recommended if you already have an HTTP server)
+### Вариант Б: webroot
 
-Your HTTP server must serve `/.well-known/acme-challenge/` from the specified webroot.
+Подходит, если на сервере уже есть HTTP-сервер. Он должен отдавать `/.well-known/acme-challenge/` из каталога webroot.
 
 ```bash
 sudo certbot certonly --webroot -w /var/www/html -d example.com
 ```
 
-After successful issuance, Certbot will print the paths you need:
+После выпуска Certbot напечатает нужные пути:
 
 ```console
 Certificate is saved at: /etc/letsencrypt/live/example.com/fullchain.pem
 Key is saved at:         /etc/letsencrypt/live/example.com/privkey.pem
 ```
 
-These files are symlinks managed by Certbot and are updated automatically on renewal.
+Это символические ссылки, Certbot сам обновляет их при продлении.
 
-## Configure TrustTunnel to use the Certbot certificate
+## Сертификат Certbot в настройках сервера
 
-If you haven't generated TrustTunnel configuration yet, choose "Provide path to existing certificate" during the setup wizard (`trusttunnel_endpoint --setup-wizard`) and provide these paths in any order, separated by space.
+Если настроек сервера ещё нет, запустите `trusttunnel_endpoint --setup-wizard` и выберите «Provide path to existing certificate». Пути укажите через пробел, в любом порядке.
 
 ```console
 ? How would you like to create a certificate? ›
@@ -89,9 +98,9 @@ If you haven't generated TrustTunnel configuration yet, choose "Provide path to 
  › /etc/letsencrypt/live/example.com/fullchain.pem /etc/letsencrypt/live/example.com/privkey.pem
 ```
 
-If you previously generated TrustTunnel configuration, change paths in your TrustTunnel `hosts.toml` file to point to these files.
+Если настройки уже есть, замените пути в `hosts.toml`.
 
-Was:
+Было:
 
 ```toml
 [[main_hosts]]
@@ -100,7 +109,7 @@ cert_chain_path = "certs/cert.pem"
 private_key_path = "certs/key.pem"
 ```
 
-Now:
+Стало:
 
 ```toml
 [[main_hosts]]
@@ -109,62 +118,56 @@ cert_chain_path = "/etc/letsencrypt/live/example.com/fullchain.pem"
 private_key_path = "/etc/letsencrypt/live/example.com/privkey.pem"
 ```
 
-## Enable automatic renewal
+## Автоматическое продление
 
-On most modern Linux distributions, Certbot installs a systemd timer automatically.
-
-To confirm the timer exists:
+На большинстве современных дистрибутивов Certbot сам ставит таймер systemd. Проверить:
 
 ```bash
 systemctl list-timers | grep -E 'certbot|letsencrypt'
 ```
 
-If your system does not use systemd timers, you can use cron (example):
+Если таймеров systemd нет, используйте cron:
 
 ```bash
 sudo crontab -e
 ```
 
-Add:
+Добавьте строку:
 
 ```bash
 0 3 * * * certbot renew --quiet
 ```
 
-## Ensure TrustTunnel reloads the renewed certificate
+## Как сервер подхватывает новый сертификат
 
-Certbot updates files on renewal, but your service may need a restart/reload to pick up the new certificate.
-
-If TrustTunnel runs under systemd, the simplest approach is to use a deploy hook to restart it after a successful renewal.
-
-To save a deploy hook that will run after each successful renewal:
+Certbot обновляет файлы, но сервер читает их при запуске и при перечитывании настроек TLS-хостов. Проще всего добавить deploy hook, который перезапускает службу после каждого успешного продления:
 
 ```bash
 sudo certbot reconfigure --deploy-hook "systemctl restart trusttunnel"
 ```
 
-For older versions of certbot (<2.3.0), add the following line to the `[renewalparams]` section of
-`/etc/letsencrypt/renewal/<yourdomain>.conf`:
+Для Certbot старше 2.3.0 добавьте в раздел `[renewalparams]` файла `/etc/letsencrypt/renewal/<ваш-домен>.conf` строку:
 
 ```conf
 renew_hook = systemctl restart trusttunnel
 ```
 
-Adjust `trusttunnel` to your actual systemd unit name.
+Замените `trusttunnel` на настоящее имя вашей службы.
 
-## Test renewal
+Перезапуск не обязателен. Сервер перечитывает файл `hosts.toml` и сертификаты по сигналу `SIGHUP` без остановки ([CONFIGURATION.md](CONFIGURATION.md#hot-reloading-tls-hosts-and-subscription-settings), на английском), поэтому hook может послать сигнал: `systemctl kill -s HUP trusttunnel`.
+## Проверка продления
 
-Always run a dry-run once to ensure renewal works end-to-end:
+Один раз запустите пробное продление и убедитесь, что оно проходит целиком:
 
 ```bash
 sudo certbot renew --dry-run
 ```
 
-If you use `--standalone`, port 80 must be available during the dry run.
+С режимом `--standalone` порт 80 на время пробы должен быть свободен.
 
-## Troubleshooting
+## Если что-то не работает
 
-- **Port 80 is busy**: stop the process using port 80 temporarily, or switch to `--webroot`.
-- **DNS issues**: verify the hostname resolves to the endpoint's public IP.
-- **Firewall issues**: allow inbound 80/tcp from the Internet.
-- **Permissions**: TrustTunnel must be able to read `/etc/letsencrypt/live/.../fullchain.pem` and `privkey.pem`.
+- **Порт 80 занят.** Остановите процесс на время продления или перейдите на `--webroot`.
+- **DNS.** Имя должно указывать на публичный адрес сервера.
+- **Файрвол.** Откройте входящий 80/tcp из интернета.
+- **Права.** Служба должна читать `/etc/letsencrypt/live/.../fullchain.pem` и `privkey.pem`.

@@ -1,157 +1,184 @@
-# TrustTunnel Endpoint Configuration
+# Настройки endpoint CatTunnel
 
-This document describes all available configuration settings and configuration files for the TrustTunnel VPN endpoint.
+English: [CONFIGURATION.en.md](CONFIGURATION.en.md)
 
-## Table of Contents
+Документ описывает файлы настроек и параметры командной строки сервера CatTunnel (бинарник `trusttunnel_endpoint`). Сервер это форк TrustTunnel endpoint. Всё, что здесь не помечено как «добавлено в форке», работает как в [TrustTunnel](https://github.com/TrustTunnel/TrustTunnel/blob/master/CONFIGURATION.md). Ключи форка собраны в разделе [Ключи форка](#ключи-форка). Чем форк отличается от апстрима в целом: [docs/upstream-divergence.md](docs/upstream-divergence.md).
 
-- [Overview](#overview)
-- [Command Line Arguments](#command-line-arguments)
-- [Configuration Files](#configuration-files)
-    - [Main Settings File (vpn.toml)](#main-settings-file-vpntoml)
-    - [TLS Hosts Settings File (hosts.toml)](#tls-hosts-settings-file-hoststoml)
-    - [Credentials File (credentials.toml)](#credentials-file-credentialstoml)
-    - [Rules File (rules.toml)](#rules-file-rulestoml)
-- [Settings Reference](#settings-reference)
-    - [Core Settings](#core-settings)
-    - [Listen Protocol Settings](#listen-protocol-settings)
-    - [Forward Protocol Settings](#forward-protocol-settings)
-    - [Reverse Proxy Settings](#reverse-proxy-settings)
-    - [ICMP Settings](#icmp-settings)
-    - [Metrics Settings](#metrics-settings)
-    - [Subscription Settings](#subscription-settings)
-- [TLS Hosts Reference](#tls-hosts-reference)
-- [Rules Reference](#rules-reference)
-- [Runtime Configuration](#runtime-configuration)
+Репозитории CatTunnel: [cattunnel](https://github.com/Cattunnel/cattunnel) (приложение), [cattunnel-router](https://github.com/Cattunnel/cattunnel-router) (роутер), [cattunnel-server](https://github.com/Cattunnel/cattunnel-server) (этот сервер).
+
+## Содержание
+
+- [Обзор](#обзор)
+- [Параметры командной строки](#параметры-командной-строки)
+- [Файлы настроек](#файлы-настроек)
+- [Справочник настроек](#справочник-настроек)
+- [Ключи форка](#ключи-форка)
+- [TLS-хосты](#tls-хосты)
+- [Правила](#правила)
+- [Работа сервера](#работа-сервера)
 
 ---
 
-## Overview
+## Обзор
 
-The TrustTunnel endpoint uses TOML-formatted configuration files. The main
-configuration is split into:
+Настройки лежат в файлах TOML:
 
-1. **Main settings file** - Core endpoint configuration (timeouts, protocols, etc.)
-2. **TLS hosts settings file** - TLS certificate and hostname configuration
-3. **Credentials file** - Client authentication credentials
-4. **Rules file** - Connection filtering rules
+1. **Основной файл** (`vpn.toml`): сроки, протоколы, транспорты.
+2. **Файл TLS-хостов** (`hosts.toml`): сертификаты и имена.
+3. **Файл пользователей** (`credentials.toml`): логины и пароли.
+4. **Файл правил** (`rules.toml`): фильтр подключений.
 
-The `trusttunnel_endpoint --setup-wizard` tool can generate these files interactively.
+Основной файл и файл TLS-хостов сервер получает в аргументах запуска. Пользователей и правила он читает по путям `credentials_file` и `rules_file` из основного файла.
+
+Мастер настройки (`trusttunnel_endpoint --setup-wizard`) создаёт эти файлы. Он не пишет ключи форка (`xhttp_*`, `[cattail]`, `decoy_only_ips_file`): их добавляют в `vpn.toml` вручную после мастера. В неинтерактивном режиме мастер перезаписывает существующие файлы без вопросов.
+
+Как установить сервер из релиза Cattunnel или собрать его: [README.md](README.md#готовые-сборки).
 
 ---
 
-## Command Line Arguments
+## Параметры командной строки
 
-The endpoint binary accepts the following command line arguments:
+| Параметр | Кратко | Что делает | По умолчанию |
+| --- | --- | --- | --- |
+| `--version` | `-v` | Печатает версию и выходит | нет |
+| `--setup-wizard` | нет | Запускает мастер настройки; должен идти первым аргументом | нет |
+| `--loglvl` | `-l` | Уровень журнала: `info`, `debug`, `trace` | `info` |
+| `--logfile` | нет | Файл журнала; без него журнал идёт в stdout | stdout |
+| `--sentry_dsn` | нет | DSN Sentry для отчётов об ошибках | нет |
+| `--jobs` | нет | Число рабочих потоков | число процессоров |
+| `<settings>` | нет | **Обязателен.** Путь к основному файлу | нет |
+| `<tls_hosts_settings>` | нет | **Обязателен.** Путь к файлу TLS-хостов; `SIGHUP` перечитывает его | нет |
+| `--client_config` | `-c` | Печатает настройки клиента с этим именем и выходит | нет |
+| `--address` | `-a` | Адрес сервера для настроек клиента (нужен `-c`): `ip`, `ip:port`, `domain` или `domain:port`. Можно повторять. Если включена `[subscription]`, можно не указывать: берётся адрес подписки | нет |
+| `--custom-sni` | `-s` | Подменяет SNI клиента; значение должно совпасть с `hostname` или `allowed_sni` основного хоста | нет |
+| `--client-random-prefix` | `-r` | Явный `client_random_prefix` для клиента. В `rules.toml` должно быть подходящее правило с действием `allow` | нет |
+| `--generate-client-random-prefix` | нет | Создаёт новый `client_random_prefix`, дописывает правило `allow` в `rules.toml` и использует его. Несовместим с `-r`. Нужен `rules_file` в настройках | нет |
+| `--prefix-length` | нет | Длина созданного префикса в байтах (с `--generate-client-random-prefix`) | `4` |
+| `--prefix-percent` | нет | Доля единичных бит в маске (с `--generate-client-random-prefix`) | `70` |
+| `--prefix-mask` | нет | Явная маска в hex; несовместима с `--prefix-length` и `--prefix-percent` | нет |
+| `--client-random-auth-key` | нет | Ключ (hex) для `client_random`, выводимого из SNI. Несовместим с `-r` и `--generate-client-random-prefix`. В `rules.toml` должно быть правило с этим ключом и действием `allow` | нет |
+| `--format` | `-f` | Формат вывода: `deeplink` (ссылка `tt://?`) или `toml` | `deeplink` |
+| `--name` | `-n` | Имя сервера для клиента | нет |
+| `--dns-upstream` | `-d` | DNS-сервер для клиента; можно повторять | нет |
+| `--subscription-url` | нет | Подменяет адрес подписки (только хост и путь); логин и пароль берутся из `credentials.toml` | нет |
+| `--subscription-only` | нет | Печатает минимальную ссылку только с адресом подписки. Нужны `--format deeplink`, включённая `[subscription]` и сертификат хоста подписки, который проверяется системными центрами сертификации | нет |
 
-| Argument | Short | Description | Default |
-| -------- | ------- | ----------- | ------- |
-| `--version` | `-v` | Print version and exit | - |
-| `--setup-wizard` | - | Run the setup wizard and exit. Must be the first argument | - |
-| `--loglvl` | `-l` | Logging level (`info`, `debug`, `trace`) | `info` |
-| `--logfile` | - | File path for storing logs (stdout if not specified) | stdout |
-| `--sentry_dsn` | - | Sentry DSN for error reporting | - |
-| `--jobs` | - | Number of worker threads (defaults to CPU count) | CPU count |
-| `<settings>` | - | **Required.** Path to main settings file | - |
-| `<tls_hosts_settings>` | - | **Required.** Path to TLS hosts settings file | - |
-| `--client_config` | `-c` | Print endpoint config for specified client and exit | - |
-| `--address` | `-a` | Endpoint address to add to client config (requires `-c`). Accepts `ip`, `ip:port`, `domain`, or `domain:port`. Optional when `[subscription]` is enabled: the subscription `address` is used as the fallback. | - |
-| `--client-random-prefix` | `-r` | Use an explicit `client_random_prefix` in the exported client config (requires `-c`). | - |
-| `--generate-client-random-prefix` | - | Generate a new `client_random_prefix`, append a matching allow rule to `rules.toml`, and use it in the exported client config (requires `-c`). | - |
-| `--prefix-length` | - | Length in bytes for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). | `4` |
-| `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
-| `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
-| `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+В экспортируемых настройках и ссылке `tls_profile` не задаётся: клиент берёт `chrome`, пока профиль не указан отдельно. Формат ссылки: [DEEP_LINK.md](DEEP_LINK.md).
 
-The exported client configuration and deep-link do not set `tls_profile`.
-Clients use `chrome` unless the profile is set separately.
+После ссылки сервер печатает адрес страницы с QR-кодом на `trusttunnel.org` (это страница апстрима). Приложение CatTunnel берёт ссылку и из текста, так что страница не обязательна.
 
-### Examples
+В ссылке нет настроек NineLives и CatTail. Они приходят клиенту через подписку или тегами ссылки: [docs/ninelives.md](docs/ninelives.md), [docs/cattail.md](docs/cattail.md).
+
+### Примеры
 
 ```bash
-# Start the endpoint
+# Запуск сервера
 ./trusttunnel_endpoint vpn.toml hosts.toml
 
-# Start with debug logging
+# Подробный журнал
 ./trusttunnel_endpoint vpn.toml hosts.toml -l debug
 
-# Start with file logging
+# Журнал в файл
 ./trusttunnel_endpoint vpn.toml hosts.toml --logfile /var/log/trusttunnel.log
 
-# Export client configuration with IP address
+# Настройки клиента, адрес по IP
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a 203.0.113.1
 
-# Export client configuration with explicit port
+# Адрес с портом
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a 203.0.113.1:443
 
-# Export client configuration with domain name
+# Адрес по имени
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com
 
-# Export client configuration with domain name and explicit port
-./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com:443
+# Файл TOML вместо ссылки
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com --format toml
 
-# Export client configuration with an explicit client_random_prefix
+# Явный client_random_prefix
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --client-random-prefix a0b0/f0f0
 
-# Generate a new client_random_prefix, append an allow rule to rules.toml, and export it
+# Новый client_random_prefix с правилом в rules.toml
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --generate-client-random-prefix
 
-# Generate a new client_random_prefix with a custom mask
+# Новый префикс с заданной маской
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --generate-client-random-prefix --prefix-mask aaaa7777
 
-# Export client configuration with an auth key for SNI-derived client random
+# Ключ для client_random, выводимого из SNI
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --client-random-auth-key 00112233445566778899aabbccddeeff
 ```
 
+### Мастер настройки
+
+`--setup-wizard` запускается первым аргументом. Без параметров он задаёт вопросы. Неинтерактивный режим:
+
+```bash
+sudo ./trusttunnel_endpoint --setup-wizard -m non-interactive \
+    -a 0.0.0.0:443 -c admin:secretpass -n vpn.example.com \
+    --lib-settings vpn.toml --hosts-settings hosts.toml
+```
+
+| Параметр | Кратко | Что делает |
+| --- | --- | --- |
+| `--mode` | `-m` | `interactive` (по умолчанию) или `non-interactive` |
+| `--address` | `-a` | Адрес прослушивания; обязателен в неинтерактивном режиме |
+| `--creds` | `-c` | `логин:пароль`; обязателен в неинтерактивном режиме |
+| `--hostname` | `-n` | Имя в сертификате; обязательно в неинтерактивном режиме |
+| `--lib-settings` | нет | Куда записать основной файл; обязателен в неинтерактивном режиме |
+| `--hosts-settings` | нет | Куда записать файл TLS-хостов; обязателен в неинтерактивном режиме |
+| `--cert-type` | нет | `self-signed`, `letsencrypt` или `provided` |
+| `--cert-chain-path`, `--cert-key-path` | нет | Готовые сертификат и ключ; обязательны при `provided` |
+| `--acme-email` | нет | Почта для Let's Encrypt; обязательна при `letsencrypt` |
+| `--acme-challenge` | нет | Способ проверки ACME; в неинтерактивном режиме только `http-01` (по умолчанию) |
+| `--acme-staging` | нет | Тестовое окружение Let's Encrypt |
+
+Подсказка мастера (`-h`) ссылается на документацию апстрима, а не CatTunnel.
+
 ---
 
-## Configuration Files
+## Файлы настроек
 
-### Main Settings File (vpn.toml)
+### Основной файл (vpn.toml)
 
-The main settings file contains core endpoint configuration. Example:
-
-> Native deployments commonly use `listen_address = "0.0.0.0:443"`.
-> If you run Docker with host-to-container mapping `443:8443`, use
-> `listen_address = "0.0.0.0:8443"` inside `vpn.toml`.
+> Если сервер слушает порт 443 напрямую, `listen_address = "0.0.0.0:443"`. Если в Docker порт 443 хоста отображается на 8443 контейнера, внутри `vpn.toml` укажите `listen_address = "0.0.0.0:8443"`.
 
 ```toml
-# The address to listen on
+# Адрес прослушивания
 listen_address = "0.0.0.0:443"
 
-# Whether IPv6 connections can be routed
+# Можно ли маршрутизировать IPv6
 ipv6_available = true
 
-# Whether connections to private network of the endpoint are allowed.
-# Applies to traffic tunneled by clients only, the reverse proxy
-# `server_address` is always reachable.
+# Можно ли клиентам ходить в частную сеть сервера.
+# Относится только к трафику клиентов; server_address обратного прокси доступен всегда.
 allow_private_network_connections = false
 
-# Timeout of an incoming TLS handshake (seconds)
+# Срок TLS-рукопожатия (секунды)
 tls_handshake_timeout_secs = 10
 
-# Timeout of a client listener (seconds)
+# Срок клиентского слушателя (секунды)
 client_listener_timeout_secs = 600
 
-# Timeout of outgoing connection establishment (seconds)
+# Срок установки исходящего соединения (секунды)
 connection_establishment_timeout_secs = 30
 
-# Idle timeout of tunneled TCP connections (seconds)
+# Простой туннелируемых TCP-соединений (секунды)
 tcp_connections_timeout_secs = 604800
 
-# Timeout of tunneled UDP "connections" (seconds)
+# Простой туннелируемых UDP-«соединений» (секунды)
 udp_connections_timeout_secs = 300
 
-# Path to credentials file
+# Файл пользователей
 credentials_file = "credentials.toml"
 
-# Path to rules file (optional)
+# Файл правил (необязательно)
 rules_file = "rules.toml"
 
-# Listen protocol settings
+# Добавлено в форке (необязательно)
+# decoy_only_ips_file = "decoy-only.txt"
+
 [listen_protocols]
 
 [listen_protocols.http1]
@@ -179,62 +206,60 @@ disable_active_migration = true
 enable_early_data = true
 message_queue_capacity = 4096
 
-# Forward protocol (optional, defaults to direct)
+# Пересылка соединений (необязательно, по умолчанию напрямую)
 [forward_protocol]
 direct = {}
 
-# Reverse proxy settings (optional)
+# Обратный прокси (необязательно)
 # [reverse_proxy]
 # server_address = "127.0.0.1:8080"
 # path_mask = "/api"
 # h3_backward_compatibility = false
 
-# ICMP settings (optional, requires superuser)
+# ICMP (необязательно, на части систем нужен суперпользователь)
 # [icmp]
 # interface_name = "eth0"
 # request_timeout_secs = 3
 # recv_message_queue_capacity = 256
 
-# Metrics settings (optional)
+# Метрики (необязательно)
 # [metrics]
 # address = "127.0.0.1:1987"
 # request_timeout_secs = 3
 # per_client_metrics = false
 ```
 
-### TLS Hosts Settings File (hosts.toml)
-
-Configures TLS certificates and hostnames. Example:
+### Файл TLS-хостов (hosts.toml)
 
 ```toml
-# Main TLS hosts for traffic tunneling
+# Основные хосты: туннель и служебные запросы
 [[main_hosts]]
 hostname = "vpn.example.com"
 cert_chain_path = "certs/cert.pem"
 private_key_path = "certs/key.pem"
+# Дополнительные имена с сертификатом этого хоста (необязательно)
+allowed_sni = ["alt.example.com"]
 
-# Ping hosts for HTTPS health checks (optional)
+# Хосты проверки доступности (необязательно)
 [[ping_hosts]]
 hostname = "ping.vpn.example.com"
 cert_chain_path = "certs/cert.pem"
 private_key_path = "certs/key.pem"
 
-# Speed test hosts (optional)
+# Хосты проверки скорости (необязательно)
 [[speedtest_hosts]]
 hostname = "speed.vpn.example.com"
 cert_chain_path = "certs/cert.pem"
 private_key_path = "certs/key.pem"
 
-# Reverse proxy hosts (optional, requires reverse_proxy in main settings)
+# Хосты обратного прокси (нужна [reverse_proxy] в основном файле)
 # [[reverse_proxy_hosts]]
 # hostname = "api.example.com"
 # cert_chain_path = "certs/cert.pem"
 # private_key_path = "certs/key.pem"
 ```
 
-### Credentials File (credentials.toml)
-
-Contains client authentication credentials. Example:
+### Файл пользователей (credentials.toml)
 
 ```toml
 [[client]]
@@ -244,27 +269,28 @@ password = "secure_password_1"
 [[client]]
 username = "user2"
 password = "secure_password_2"
+# Необязательно: лимиты соединений этого пользователя
+# max_http2_conns = 8
+# max_http3_conns = 1
 ```
 
-### Rules File (rules.toml)
-
-Defines connection filtering rules. Example:
+### Файл правил (rules.toml)
 
 ```toml
-# Rules are evaluated in order, first matching rule's action is applied.
-# If no rules match, the connection is allowed by default.
+# Правила проверяются по порядку, действует первое подошедшее.
+# Если ни одно не подошло, подключение разрешено.
 
-# Deny connections from specific IP range
+# Запретить диапазон адресов
 [[rule]]
 cidr = "192.168.1.0/24"
 action = "deny"
 
-# Allow connections with specific TLS client random prefix
+# Разрешить подключения с заданным префиксом TLS client random
 [[rule]]
 client_random_prefix = "aabbcc"
 action = "allow"
 
-# Deny connections matching both IP and client random with mask
+# Запретить, если совпали и адрес, и client random с маской
 [[rule]]
 cidr = "10.0.0.0/8"
 client_random_prefix = "a0b0/f0f0"
@@ -273,87 +299,85 @@ action = "deny"
 
 ---
 
-## Settings Reference
+## Справочник настроек
 
-### Core Settings
+### Основные настройки
 
-| Setting                                 | Type    | Default       | Description                                                      |
-|-----------------------------------------|---------|---------------|------------------------------------------------------------------|
-| `listen_address`                        | String  | `0.0.0.0:443` | Address and port to listen on                                    |
-| `ipv6_available`                        | Boolean | `true`        | Whether IPv6 connections can be routed                           |
-| `allow_private_network_connections`     | Boolean | `false`       | Allow connections to endpoint's private network                  |
-| `tls_handshake_timeout_secs`            | Integer | `10`          | TLS handshake timeout in seconds                                 |
-| `client_listener_timeout_secs`          | Integer | `600`         | Client listener timeout in seconds (10 minutes)                  |
-| `connection_establishment_timeout_secs` | Integer | `30`          | Outgoing connection timeout in seconds                           |
-| `tcp_connections_timeout_secs`          | Integer | `604800`      | Idle TCP connection timeout (1 week)                             |
-| `udp_connections_timeout_secs`          | Integer | `300`         | UDP connection timeout (5 minutes)                               |
-| `credentials_file`                      | String  | -             | Path to credentials file                                         |
-| `rules_file`                            | String  | -             | Path to rules file (optional)                                    |
-| `decoy_only_ips_file`                   | String  | -             | Path to a list of client IPs/CIDRs (one per line) whose VPN requests always fail as unauthenticated; the decoy site stays available. Re-read when the file changes |
-| `speedtest_enable`                      | Boolean | `false`       | Enable speedtest handler on main hosts                           |
-| `ping_enable`                           | Boolean | `false`       | Enable ping handler on main hosts                                |
-| `ping_path`                             | String  | -             | Optional path prefix for ping on main hosts                      |
-| `speedtest_path`                        | String  | -             | Optional path prefix for speedtest on main hosts                 |
-| `auth_failure_status_code`              | Integer | `407`         | HTTP status code on auth failure for CONNECT requests            |
-| `non_connect_auth_failure_status_code`  | Integer | -             | HTTP status code on auth failure for non-CONNECT requests        |
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `listen_address` | строка | `0.0.0.0:443` | Адрес и порт прослушивания |
+| `ipv6_available` | логический | `true` | Можно ли маршрутизировать IPv6 |
+| `allow_private_network_connections` | логический | `false` | Разрешить клиентам частную сеть сервера |
+| `tls_handshake_timeout_secs` | целое | `10` | Срок TLS-рукопожатия, секунды |
+| `client_listener_timeout_secs` | целое | `600` | Срок клиентского слушателя, секунды |
+| `connection_establishment_timeout_secs` | целое | `30` | Срок исходящего соединения, секунды |
+| `tcp_connections_timeout_secs` | целое | `604800` | Простой TCP-соединения (1 неделя) |
+| `udp_connections_timeout_secs` | целое | `300` | Срок UDP-«соединения» (5 минут) |
+| `credentials_file` | строка | нет | Путь к файлу пользователей |
+| `rules_file` | строка | нет | Путь к файлу правил. Нет файла или он не читается: разрешено всё |
+| `speedtest_enable` | логический | `false` | Проверка скорости на основных хостах |
+| `speedtest_path` | строка | `/speedtest` | Начало пути проверки скорости |
+| `ping_enable` | логический | `false` | Проверка доступности на основных хостах |
+| `ping_path` | строка | `/ping` | Начало пути проверки доступности |
+| `auth_failure_status_code` | целое | `407` | Код ответа на неудачную проверку логина для `CONNECT` |
+| `non_connect_auth_failure_status_code` | целое | нет | Тот же код для запросов не `CONNECT`; если не задан, берётся `auth_failure_status_code` |
+| `default_max_http2_conns_per_client` | целое | нет | Предел одновременных соединений HTTP/1 и HTTP/2 на пользователя. Клиент открывает по умолчанию 8 соединений HTTP/2. Не задан: без предела. Перекрывается `max_http2_conns` в `credentials.toml` |
+| `default_max_http3_conns_per_client` | целое | нет | Предел соединений HTTP/3 на пользователя. Не задан: без предела. Перекрывается `max_http3_conns` |
 
-Ping and speedtest are matched only via their configured paths. Default paths are: `/ping` and `/speedtest`.
-`auth_failure_status_code` and `non_connect_auth_failure_status_code` accept `407`, `405`, `404`, or `403`.
-If `non_connect_auth_failure_status_code` is not set, it falls back to `auth_failure_status_code`.
-Warning: using a value other than `407` for `auth_failure_status_code` breaks proxy authentication in Chrome.
+Пути начинаются с `/`. Сервер не стартует, если один путь совпадает с другим или служит его началом в этих парах: `ping_path` и `speedtest_path`, `ping_path` и `xhttp_path`, `speedtest_path` и `xhttp_path`, путь подписки и каждый из `ping_path`, `speedtest_path`, `path_mask`.
 
-### Listen Protocol Settings
+`auth_failure_status_code` и `non_connect_auth_failure_status_code` принимают `407`, `405`, `404` или `403`. Значение не `407` ломает проверку логина прокси в Chrome.
 
-Configure which protocols the endpoint accepts. At least one protocol must be enabled.
+Без пользователей сервер на публичном адресе не стартует, а на loopback-адресе стартует с предупреждением в журнале.
 
-#### HTTP/1.1 Settings (`[listen_protocols.http1]`)
+### Настройки протоколов приёма
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `upload_buffer_size` | Integer | `32768` | Buffer size for outgoing traffic (bytes) |
+Нужен хотя бы один протокол.
 
-#### HTTP/2 Settings (`[listen_protocols.http2]`)
+#### HTTP/1.1 (`[listen_protocols.http1]`)
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `initial_connection_window_size` | Integer | `8388608` | Connection-level flow control window (8 MB) |
-| `initial_stream_window_size` | Integer | `131072` | Stream-level flow control window (128 KB) |
-| `max_concurrent_streams` | Integer | `1000` | Maximum concurrent streams |
-| `max_frame_size` | Integer | `16384` | Maximum HTTP/2 frame payload size |
-| `header_table_size` | Integer | `65536` | Maximum header frame size |
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `upload_buffer_size` | целое | `32768` | Буфер исходящего трафика, байты |
 
-#### QUIC/HTTP/3 Settings (`[listen_protocols.quic]`)
+#### HTTP/2 (`[listen_protocols.http2]`)
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `recv_udp_payload_size` | Integer | `1350` | Maximum received UDP payload size |
-| `send_udp_payload_size` | Integer | `1350` | Maximum sent UDP payload size |
-| `initial_max_data` | Integer | `104857600` | Initial max connection data (100 MB) |
-| `initial_max_stream_data_bidi_local` | Integer | `1048576` | Local bidirectional stream flow control (1 MB) |
-| `initial_max_stream_data_bidi_remote` | Integer | `1048576` | Remote bidirectional stream flow control (1 MB) |
-| `initial_max_stream_data_uni` | Integer | `1048576` | Unidirectional stream flow control (1 MB) |
-| `initial_max_streams_bidi` | Integer | `4096` | Maximum bidirectional streams |
-| `initial_max_streams_uni` | Integer | `4096` | Maximum unidirectional streams |
-| `max_connection_window` | Integer | `25165824` | Maximum connection window (24 MB) |
-| `max_stream_window` | Integer | `16777216` | Maximum stream window (16 MB) |
-| `disable_active_migration` | Boolean | `true` | Disable active connection migration |
-| `enable_early_data` | Boolean | `true` | Enable 0-RTT early data |
-| `message_queue_capacity` | Integer | `4096` | QUIC multiplexer queue capacity |
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `initial_connection_window_size` | целое | `8388608` | Окно управления потоком соединения (8 МБ) |
+| `initial_stream_window_size` | целое | `131072` | Окно потока (128 КБ) |
+| `max_concurrent_streams` | целое | `1000` | Одновременных потоков |
+| `max_frame_size` | целое | `16384` | Наибольшая полезная нагрузка кадра |
+| `header_table_size` | целое | `65536` | Размер таблицы заголовков |
 
-### Forward Protocol Settings
+#### QUIC и HTTP/3 (`[listen_protocols.quic]`)
 
-Configure how the endpoint forwards connections.
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `recv_udp_payload_size` | целое | `1350` | Наибольшая принимаемая нагрузка UDP |
+| `send_udp_payload_size` | целое | `1350` | Наибольшая отправляемая нагрузка UDP |
+| `initial_max_data` | целое | `104857600` | Начальный предел данных соединения (100 МБ) |
+| `initial_max_stream_data_bidi_local` | целое | `1048576` | Предел локального двунаправленного потока (1 МБ) |
+| `initial_max_stream_data_bidi_remote` | целое | `1048576` | Предел удалённого двунаправленного потока (1 МБ) |
+| `initial_max_stream_data_uni` | целое | `1048576` | Предел однонаправленного потока (1 МБ) |
+| `initial_max_streams_bidi` | целое | `4096` | Двунаправленных потоков |
+| `initial_max_streams_uni` | целое | `4096` | Однонаправленных потоков |
+| `max_connection_window` | целое | `25165824` | Наибольшее окно соединения (24 МБ) |
+| `max_stream_window` | целое | `16777216` | Наибольшее окно потока (16 МБ) |
+| `disable_active_migration` | логический | `true` | Запретить активную смену адреса |
+| `enable_early_data` | логический | `true` | Разрешить 0-RTT |
+| `message_queue_capacity` | целое | `4096` | Очередь мультиплексора QUIC |
 
-#### Direct Forwarding (default)
+### Пересылка соединений
+
+По умолчанию соединения идут напрямую:
 
 ```toml
 [forward_protocol]
 direct = {}
 ```
 
-Routes connections directly to target hosts.
-
-#### SOCKS5 Forwarding
+Через прокси SOCKS5:
 
 ```toml
 [forward_protocol.socks5]
@@ -361,14 +385,14 @@ address = "127.0.0.1:1080"
 extended_auth = false
 ```
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `address` | String | - | **Required.** SOCKS5 proxy address |
-| `extended_auth` | Boolean | `false` | Enable extended authentication |
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `address` | строка | нет | **Обязательна.** Адрес прокси SOCKS5 |
+| `extended_auth` | логический | `false` | Расширенная проверка логина |
 
-### Reverse Proxy Settings
+### Обратный прокси
 
-Optional. Enables TLS termination and HTTP protocol translation.
+Необязательно. Сервер завершает TLS на хостах `reverse_proxy_hosts` и основных хостах по пути `path_mask` и передаёт запрос по HTTP/1.1 на `server_address`. В форке обратный прокси служит сайтом-приманкой.
 
 ```toml
 [reverse_proxy]
@@ -377,54 +401,39 @@ path_mask = "/api"
 h3_backward_compatibility = false
 ```
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `server_address` | String | - | **Required.** Origin server address |
-| `path_mask` | String | - | **Required.** Path prefix for routing (must start with `/`) |
-| `h3_backward_compatibility` | Boolean | `false` | Override HTTP method for H3→H1 translation |
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `server_address` | строка | нет | **Обязательна.** Адрес исходного сервера |
+| `path_mask` | строка | нет | **Обязательна.** Начало пути, должно начинаться с `/` |
+| `h3_backward_compatibility` | логический | `false` | Подменять метод при переводе HTTP/3 в HTTP/1 |
 
-The reverse proxy translates HTTP/x traffic to HTTP/1.1 towards the origin server. Translated requests include the `X-Original-Protocol` header (`HTTP1` or `HTTP3`).
+Переведённые запросы несут заголовок `X-Original-Protocol` (`HTTP1` или `HTTP3`). `server_address` задаёт оператор, поэтому `allow_private_network_connections` на него не действует.
 
-`server_address` is configured by the endpoint operator and is therefore not affected by `allow_private_network_connections`: an origin server on a loopback or private address stays reachable even when tunneled client traffic to private networks is forbidden.
+### ICMP
 
-### ICMP Settings
+Необязательно. На части систем нужен суперпользователь.
 
-Optional. Enables ICMP forwarding. Requires superuser privileges on some systems.
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `interface_name` | строка | `eth0` (Linux), `en0` (остальные) | Сетевой интерфейс сокета ICMP |
+| `request_timeout_secs` | целое | `3` | Срок ICMP-запроса, секунды |
+| `recv_message_queue_capacity` | целое | `256` | Очередь на клиента |
 
-```toml
-[icmp]
-interface_name = "eth0"
-request_timeout_secs = 3
-recv_message_queue_capacity = 256
-```
+### Метрики
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `interface_name` | String | `eth0` (Linux) / `en0` (macOS) | Network interface for ICMP socket |
-| `request_timeout_secs` | Integer | `3` | ICMP request timeout in seconds |
-| `recv_message_queue_capacity` | Integer | `256` | Message queue capacity per client |
+Необязательно. Метрики Prometheus; подробности: [METRICS.md](METRICS.md).
 
-### Metrics Settings
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `address` | строка | `127.0.0.1:1987` | Адрес метрик |
+| `request_timeout_secs` | целое | `3` | Срок запроса, секунды |
+| `per_client_metrics` | логический | `false` | Ряды по пользователям и путь `/clients`. Раскрывает имена пользователей и адреса клиентов |
 
-Optional. Enables Prometheus-compatible metrics endpoint.
+Пути обработчика метрик: `/health-check`, `/metrics`, `/clients` и добавленный в форке `/ja4`. `/ja4` отдаёт JSON со счётчиками отпечатков JA4 входящих ClientHello с начала работы сервера. Форк добавил и метрики `xhttp_reserved_bytes` и `xhttp_memory_rejections_total` (бюджет памяти NineLives).
 
-```toml
-[metrics]
-address = "127.0.0.1:1987"
-request_timeout_secs = 3
-per_client_metrics = false
-```
+### Подписка
 
-| Setting | Type | Default | Description |
-| ------- | ---- | ------- | ----------- |
-| `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
-| `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
-| `per_client_metrics` | Boolean | `false` | Expose per-user metric series and the `/clients` endpoint labelled with the authenticated username. Exposes usernames and client IPs on the metrics listener. |
-
-### Subscription Settings
-
-Optional. Enables an HTTPS subscription endpoint that serves a per-user JSON
-configuration over an existing main TLS host.
+Необязательно. Сервер отдаёт JSON с настройками конкретного пользователя по HTTPS на основном хосте.
 
 ```toml
 [subscription]
@@ -432,192 +441,299 @@ enabled = true
 hostname = "vpn.example.com"
 path = "/subscription"
 address = "203.0.113.1:443"
-name = "Acme Corp VPN"
+name = "Example VPN"
 dns_upstreams = ["tls://1.1.1.1", "tls://8.8.8.8"]
 custom_sni = "example.org"
 client_random_prefix = "a0b0/f0f0"
 ```
 
-| Setting | Type | Default | Description |
+| Настройка | Тип | По умолчанию | Описание |
 | --- | --- | --- | --- |
-| `enabled` | Boolean | `false` | Master switch |
-| `hostname` | String | - | Must match a `main_hosts` hostname |
-| `path` | String | `"/subscription"` | HTTP path served (exact match) |
-| `address` | String | - | `host:port` / `ip:port` placed in the JSON |
-| `name` | String | - | (Optional) Configuration name hint |
-| `dns_upstreams` | Array | `[]` | (Optional) DNS upstreams |
-| `custom_sni` | String | - | (Optional) Custom TLS SNI |
-| `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
+| `enabled` | логический | `false` | Главный выключатель |
+| `hostname` | строка | нет | Должно совпасть с `hostname` из `main_hosts` |
+| `path` | строка | `/subscription` | Путь (точное совпадение); начинается с `/`, не может быть просто `/` |
+| `address` | строка | нет | **Обязательна.** `host:port` или `ip:port` для JSON |
+| `name` | строка | нет | Подсказка имени для клиента |
+| `dns_upstreams` | массив | `[]` | Подсказка DNS-серверов |
+| `custom_sni` | строка | нет | Свой SNI для клиента |
+| `client_random_prefix` | строка | нет | `hex[/hex]` |
 
-All fields are validated on every endpoint invocation (including the
-`--client_config` export) whenever the `[subscription]` section is present in
-`vpn.toml`, even when `enabled = false`.
+Поля проверяются при каждом запуске, в том числе при `--client_config`, если секция есть, даже при `enabled = false`. `address` служит и запасным адресом для `--client_config`.
 
-The `address` value is also reused by the `--client_config` export
-if the `--address` is not specified
+Порядок ответов на запрос к пути подписки:
 
-The endpoint requires HTTP Basic Auth (`Authorization` header) matching an
-entry in `credentials.toml`; the response body contains only that user's
-credentials. Non-GET requests return `405`; missing or invalid credentials
-return `401`; an authenticated request while subscription is disabled returns
-`403`; otherwise the response is `200` with the per-user JSON body.
-
----
-
-## TLS Hosts Reference
-
-Each TLS host entry requires:
-
-| Field | Type | Description |
-| ----- | ---- | ----------- |
-| `hostname` | String | **Required.** Hostname for TLS SNI matching (must be unique) |
-| `cert_chain_path` | String | **Required.** Path to PEM certificate chain file |
-| `private_key_path` | String | **Required.** Path to PEM private key file |
-
-### Host Types
-
-- **`main_hosts`** - Primary hosts for VPN traffic tunneling and service requests
-- **`ping_hosts`** - Respond with `200 OK` to HTTPS GET requests (health checks)
-- **`speedtest_hosts`** - Handle speed test requests:
-    - `GET /Nmb.bin` (N=1-100): Download N megabytes
-    - `POST /upload.html`: Upload test (up to 120 MB)
-- **`reverse_proxy_hosts`** - Forward to reverse proxy server (requires `[reverse_proxy]`)
+| Условие | Ответ |
+| --- | --- |
+| Подписка не настроена или имя хоста (SNI) не то | `404` |
+| Нет или неверен логин (HTTP Basic), либо адрес клиента в списке «только сайт» | `401` |
+| Подписка выключена | `403` |
+| Метод не `GET` | `405` |
+| Иначе | `200` и JSON только этого пользователя |
 
 ---
 
-## Rules Reference
+## Ключи форка
 
-Rules filter incoming connections based on client IP and/or TLS client random data.
+Добавлено в форке. В апстриме этих ключей нет. Все они необязательны и по умолчанию выключены или нейтральны.
 
-### Rule Structure
+### NineLives (XHTTP, протокол 1)
+
+Подробно: [docs/ninelives.md](docs/ninelives.md). Ключи лежат в основном файле. NineLives не совместим с XHTTP из Xray и с клиентом TrustTunnel, слово XHTTP осталось в именах ключей по истории.
+
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `xhttp_enable` | логический | `false` | Включает NineLives на основных хостах |
+| `xhttp_path` | строка | `/api/v2/` | Начало пути запросов; к нему добавляется идентификатор сессии, например `/api/v2/<sid>` |
+| `xhttp_secret_key` | строка | нет | Seed подписи рукопожатия: base64 от 32 байт. Без верного ключа клиент, начавший обмен ключами, получает `400` |
+| `xhttp_resume_timeout` | целое, секунды | `60` | Сколько сервер хранит сессию после обрыва соединения. `0`: сессия не продолжается, клиент получает `400` |
+| `xhttp_unacked_limit` | целое, байты | `1048576` | Неподтверждённые байты на сессию; при включённом NineLives не меньше `65536` |
+| `xhttp_memory_limit` | целое, байты | четверть памяти, от 64 до 512 МиБ | Общий бюджет буферов NineLives и CatTail. Берётся меньшее из физической памяти и предела cgroup; если оба неизвестны, считается от 256 МиБ, то есть 64 МиБ. Должен быть больше нуля |
+| `xhttp_supported_versions` | массив | `[1]` | Только `[1]`: другое значение не проходит проверку |
+| `transport_mode` | строка | `"xhttp"` | Только `"xhttp"`: другое значение не проходит проверку |
+
+`xhttp_secret_key` при запуске не проверяется, неверное значение проявляется отказом при обмене ключами. Путь `xhttp_path` не должен пересекаться с `ping_path` и `speedtest_path`.
+
+### CatTail
+
+Необязательный внешний слой на отдельном TCP-порту: [docs/cattail.md](docs/cattail.md). Без секции `[cattail]` порт не открывается.
+
+```toml
+[cattail]
+listen_address = "0.0.0.0:20443"
+key = "<base64 от 32 случайных байт>"
+# необязательно
+pattern = """
+stop=3
+0=400-1400,c,200-900
+1=300-1200,c,100-700
+2=100-600,c
+mid=0-32
+end=0-96
+"""
+```
+
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `listen_address` | строка | нет | **Обязательна.** TCP-адрес слушателя CatTail; не должен совпадать с основным `listen_address`. Диапазон портов на него отображает файрвол хоста |
+| `key` | строка | нет | **Обязателен.** Ключ сервера: base64 от 32 байт |
+| `pattern` | строка | схема, показанная выше | Схема набивки направления сервера |
+
+Неверные ключ или схема не дают серверу запуститься.
+
+### Адреса «только сайт»
+
+| Настройка | Тип | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `decoy_only_ips_file` | строка | нет | Файл со списком адресов и подсетей |
+
+В файле один адрес или подсеть (CIDR) на строку, `#` начинает комментарий, строки, которые не разобрались, пропускаются. Сервер проверяет время изменения файла не чаще раза в 5 секунд и перечитывает файл, когда оно изменилось. Нет файла или он не читается: список пуст. `SIGHUP` для этого не нужен.
+
+С адреса из списка сайт-приманка показывается как обычно, а любой запрос к VPN отвечает как на неверный пароль, даже при верных данных: `CONNECT`, NineLives и подписка (`401` у подписки), вход по учётным данным в SNI. На порт CatTail такой адрес получает молчание.
+
+```text
+ запрос с адреса из decoy_only_ips_file
+        |
+        v
+ TLS-рукопожатие и сайт-приманка: как у всех
+        |
+        +-- CONNECT, NineLives, учётные данные в SNI --> ответ как на неверный пароль
+        +-- подписка ------------------------------------> 401
+        +-- порт CatTail --------------------------------> молчание
+```
+
+Рисунок 1. Что получает адрес из списка «только сайт».
+
+### Остальное, что добавлено форком
+
+| Где | Ключ | По умолчанию | Описание |
+| --- | --- | --- | --- |
+| `hosts.toml` | `allowed_sni` | `[]` | Дополнительные имена хоста (есть и в апстриме) |
+| `rules.toml` | `client_random_auth_key` | нет | См. [Правила](#правила) (есть и в апстриме) |
+
+---
+
+## TLS-хосты
+
+У каждого хоста три обязательных поля и одно необязательное:
+
+| Поле | Тип | Описание |
+| --- | --- | --- |
+| `hostname` | строка | **Обязательно.** Имя для сопоставления с SNI; уникально среди всех хостов |
+| `cert_chain_path` | строка | **Обязательно.** Файл PEM с цепочкой сертификатов |
+| `private_key_path` | строка | **Обязательно.** Файл PEM с ключом |
+| `allowed_sni` | массив | Дополнительные имена с сертификатом этого хоста |
+
+Сертификат и ключ читаются при запуске; нечитаемый файл не даёт запуститься. Нужен хотя бы один основной хост.
+
+### Виды хостов
+
+- **`main_hosts`**: основные хосты, туннель и служебные запросы.
+- **`ping_hosts`**: отвечают `200 OK` на HTTPS `GET` (проверка доступности).
+- **`speedtest_hosts`**: проверка скорости:
+    - `GET /Nmb.bin` (N от 1 до 100): отдать N мегабайт;
+    - `POST /upload.html`: приём до 120 МБ.
+- **`reverse_proxy_hosts`**: пересылают на обратный прокси; без `[reverse_proxy]` игнорируются.
+
+На основных хостах запрос направляется по пути в таком порядке:
+
+```text
+ запрос на основной хост
+        |
+        v
+ путь подписки (точное совпадение)       --> подписка
+ ping_path (если ping_enable)            --> проверка доступности
+ speedtest_path (если speedtest_enable)  --> проверка скорости
+ xhttp_path (если xhttp_enable)          --> NineLives
+ path_mask обратного прокси              --> обратный прокси
+ всё остальное                           --> туннель (CONNECT)
+```
+
+Рисунок 2. Выбор обработчика на основном хосте. Совпадение по началу пути, кроме подписки.
+
+---
+
+## Правила
+
+Правила фильтруют входящие соединения по адресу клиента и по полю TLS `client_random`.
+
+### Устройство правила
 
 ```toml
 [[rule]]
-cidr = "192.168.0.0/16"           # Optional: IP range in CIDR notation
-client_random_prefix = "aabbcc"   # Optional: Hex-encoded prefix or prefix/mask
-client_random_auth_key = "0011..." # Optional: Hex auth key for derived client random
-action = "allow"                  # Required: "allow" or "deny"
+cidr = "192.168.0.0/16"           # необязательно: диапазон адресов
+client_random_prefix = "aabbcc"   # необязательно: префикс или префикс/маска (hex)
+client_random_auth_key = "0011..." # необязательно: ключ (hex) для client_random, выводимого из SNI
+action = "allow"                  # обязательно: "allow" или "deny"
 ```
 
-### Evaluation
+### Порядок проверки
 
-1. Rules are evaluated in order
-2. First matching rule's action is applied
-3. If no rules match, connection is **allowed** by default
-4. If both `cidr` and a client random condition (`client_random_prefix` or `client_random_auth_key`) are specified, both must match
-5. `client_random_prefix` and `client_random_auth_key` are mutually exclusive; if both are set, only the auth key is enforced and the prefix is ignored
+1. Правила проверяются по порядку.
+2. Действует первое подошедшее.
+3. Если ни одно не подошло, подключение **разрешено**.
+4. Если заданы `cidr` и условие по `client_random`, должны совпасть оба.
+5. `client_random_prefix` и `client_random_auth_key` взаимоисключающие: если заданы оба, действует только ключ.
+6. Если в файле есть правило с префиксом или ключом, соединение без `client_random` запрещается сразу.
 
-### Client Random Matching
+### Сопоставление client random
 
-Three formats are supported:
-
-**Simple prefix matching:**
+**Простой префикс:**
 
 ```toml
 client_random_prefix = "aabbcc"
 ```
 
-Matches if TLS client random starts with `0xaabbcc`.
+Совпадает, если `client_random` начинается с `0xaabbcc`.
 
-**Bitwise matching with mask:**
+**Префикс с маской:**
 
 ```toml
 client_random_prefix = "a0b0/f0f0"
 ```
 
-Matches if `(client_random & 0xf0f0) == (0xa0b0 & 0xf0f0)`.
+Побайтово сравнивается `client_random & маска` с `префикс & маска` в пределах длины маски и префикса.
 
-**Key-derived client random (auth key):**
+**Ключ (client_random_auth_key):**
 
 ```toml
 client_random_auth_key = "00112233445566778899aabbccddeeff"
 ```
 
-Matches if the client proves possession of a shared key inside the handshake: the last 16 bytes of the 32-byte `client_random` must equal
+Совпадает, если последние 16 байт 32-байтного `client_random` равны
 
 ```text
-AES-128-ECB(SHA256(SNI)[0:16], HKDF-SHA256(secret = client_random_auth_key, salt = client_random[0:16]))
+AES-128-ECB(SHA256(SNI)[0:16], HKDF-SHA256(secret = client_random_auth_key, salt = client_random[0:16], info = "tls13 encryption context"))
 ```
 
-The first 16 bytes are random per connection, so the resulting `client_random` differs every handshake while the check stays deterministic, and the ClientHello remains indistinguishable from a normal one.
+Первые 16 байт случайны в каждом соединении, поэтому `client_random` каждый раз другой, а проверка детерминирована.
 
-Format and matching constraints:
+Ограничения:
 
-- The key must be a non-empty valid hex string. Keys of 16 bytes (32 hex chars) or more are recommended; shorter keys are rejected when the rule is created by the setup wizard.
-- The check depends on the SNI and the client random sent in the handshake: if the rules file contains at least one auth key rule, connections evaluated without a client random or with an empty SNI are denied outright.
-- The derivation uses the SNI as it appears in the ClientHello. If the client config sets `custom_sni`, that value is what gets validated.
-- The key is a credential: whoever knows it can authorize. It is embedded into exported client configs and deep-links, so handle it like a password.
-- Clients must support the `client_random_auth_key` config field to connect under an auth key rule.
+- Ключ: непустой hex чётной длины. Рекомендуется 16 байт (32 символа) и больше; мастер настройки отказывается создавать правило с более коротким ключом.
+- Проверка зависит от SNI. Если в файле есть правило с ключом, соединения без SNI или без `client_random` запрещаются.
+- Берётся SNI из ClientHello. Если у клиента `custom_sni`, проверяется он.
+- Ключ равен паролю: кто его знает, тот проходит проверку. Он попадает в экспортируемые настройки и ссылки, храните их как секрет.
+- Клиент должен уметь поле `client_random_auth_key`.
 
-### Examples
+```text
+ клиент                                         сервер
+   |  ClientHello: client_random =                 |
+   |    [16 случайных байт | AES-128-ECB(SHA256(SNI)[0:16], HKDF(key, эти 16 байт))]
+   |---------------------------------------------->|
+   |                     сервер выводит те же 16 байт из ключа правила
+   |                     и SNI; совпало: правило подходит, действует action
+```
+
+Рисунок 3. Проверка `client_random_auth_key`.
+
+### Примеры
 
 ```toml
-# Block specific IP range
+# Запретить диапазон адресов
 [[rule]]
 cidr = "192.168.1.0/24"
 action = "deny"
 
-# Allow specific client random prefix
+# Разрешить префикс client random
 [[rule]]
 client_random_prefix = "deadbeef"
 action = "allow"
 
-# Block internal networks with specific client signature
+# Запретить внутренние сети с заданной подписью клиента
 [[rule]]
 cidr = "10.0.0.0/8"
 client_random_prefix = "bad0/ff00"
 action = "deny"
 
-# Allow only clients that prove an auth key bound to the SNI
+# Пускать только тех, кто доказал знание ключа, привязанного к SNI
 [[rule]]
 client_random_auth_key = "00112233445566778899aabbccddeeff"
 action = "allow"
 
-# Catch-all deny (place last)
+# Запретить всё остальное (ставить последним)
 [[rule]]
 action = "deny"
 ```
 
 ---
 
-## Runtime Configuration
+## Работа сервера
 
-### Hot Reloading TLS Hosts and Subscription Settings
+### Перечитывание настроек
 
-Send `SIGHUP` to the endpoint process to reload TLS hosts settings and the
-optional `[subscription]` section without restart:
+Сигнал `SIGHUP` перечитывает файл TLS-хостов и секцию `[subscription]` основного файла без перезапуска:
 
 ```bash
 kill -HUP $(pidof trusttunnel_endpoint)
 ```
 
-This reloads the TLS hosts file and the `[subscription]` section of `vpn.toml`
-specified at startup. If the new `[subscription]` section fails to parse or
-validate, the previously loaded subscription configuration is kept and a
-warning is logged.
+Если новая `[subscription]` не разбирается или не проходит проверку, остаётся прежняя, а в журнал пишется предупреждение. Остальные настройки применяются при перезапуске. Список `decoy_only_ips_file` перечитывается сам.
 
-### Systemd Service
+### Служба systemd
 
-A systemd service template is provided. Default configuration assumes files in `/opt/trusttunnel/`:
+Шаблон службы лежит в [scripts/trusttunnel.service.template](scripts/trusttunnel.service.template). Он рассчитан на каталог `/opt/trusttunnel` и файлы `vpn.toml`, `hosts.toml`:
 
 ```bash
-# Install service
-sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/
+sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/trusttunnel.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 
-# Reload TLS settings
-sudo systemctl reload trusttunnel
+# Перечитать TLS-хосты и подписку (в шаблоне нет ExecReload, поэтому reload не работает)
+sudo systemctl kill -s HUP trusttunnel
 
-# View logs
+# Журнал
 sudo journalctl -u trusttunnel -f
 ```
 
+Установка и обновление: [README.md](README.md#установка-и-запуск). Скрипт `scripts/install.sh` в этом дереве взят из апстрима и скачивает архивы апстрима, им не пользуйтесь.
+
 ---
 
-## See Also
+## См. также
 
-- [README.md](README.md) - Quick start guide
-- [DEVELOPMENT.md](DEVELOPMENT.md) - Development documentation
-- [PROTOCOL.md](PROTOCOL.md) - Protocol specification
-- [CHANGELOG.md](CHANGELOG.md) - Changelog
+- [README.md](README.md): установка и запуск
+- [docs/features.md](docs/features.md): что возможностям CatTunnel нужно от сервера
+- [docs/upstream-divergence.md](docs/upstream-divergence.md): отличия от апстрима
+- [DEVELOPMENT.md](DEVELOPMENT.md): разработка
+- [PROTOCOL.md](PROTOCOL.md): протокол
+- [CHANGELOG.md](CHANGELOG.md): изменения

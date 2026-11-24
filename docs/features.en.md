@@ -34,7 +34,7 @@ Key names are literal identifiers in `vpn.toml`, `hosts.toml` and `rules.toml`.
 ## NineLives transport
 
 A second transport next to `CONNECT`, enabled with `xhttp_enable = true`. Overview, keys and
-key generation: [ninelives.en.md](ninelives.en.md). Wire format: [xhttp-protocol.md](xhttp-protocol.md) (in Russian).
+key generation: [ninelives.en.md](ninelives.en.md). Wire format: [xhttp-protocol.en.md](xhttp-protocol.en.md) (in Russian).
 
 ## CONNECT answer
 

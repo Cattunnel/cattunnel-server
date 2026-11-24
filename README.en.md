@@ -40,6 +40,7 @@ This tree is `1.3.0-beta.2-44-gb30fe98`, the server for CatTunnel 1.5.9.5.
 - [Prebuilt binaries](#prebuilt-binaries)
 - [Build](#build)
 - [Install and run](#install-and-run)
+- [Updating](#updating)
 - [Configuration](#configuration)
 - [Export a client configuration](#export-a-client-configuration)
 - [Docker](#docker)
@@ -90,7 +91,7 @@ Short list. The server side of each feature, with the config keys, is in
   bytes into authenticated, padded frames, so the wire carries no TLS record headers, no SNI
   and no fixed prefix. The endpoint strips the layer and hands the bytes to the same TLS
   listener. Off unless the `[cattail]` section is set. Specification and test vectors:
-  [docs/cattail.md](docs/cattail.md).
+  [docs/cattail.en.md](docs/cattail.en.md).
 - **TLS profile in links.** Tag `0x10` in `tt://` carries a numeric TLS profile; clients
   that do not know the tag skip it.
 - **TLS listener.** A ClientHello split across several TLS records is joined before the
@@ -128,7 +129,7 @@ tar -xzf trusttunnel-v1.5.9.5-linux-x86_64.tar.gz
 
 To build from source:
 
-Requirements (see [DEVELOPMENT.md](DEVELOPMENT.md)): Rust 1.95 (pinned in
+Requirements (see [DEVELOPMENT.en.md](DEVELOPMENT.en.md)): Rust 1.95 (pinned in
 `rust-toolchain.toml`), CMake, libclang and a C++ compiler. Linux and macOS are supported.
 
 ```shell
@@ -144,14 +145,35 @@ Tests and linters: `make test`, `make lint` (needs `markdownlint-cli`, rustfmt a
 
 ## Install and run
 
-Copy the binary and the service template to one directory, for example
-`/opt/trusttunnel`:
+### Quick install
+
+The script downloads a prebuilt CatTunnel server release from GitHub, compares its archive with `SHA256SUMS`, and installs it to `/opt/trusttunnel`:
 
 ```shell
-sudo mkdir -p /opt/trusttunnel
-sudo cp target/release/trusttunnel_endpoint /opt/trusttunnel/
-sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
+curl -fsSL https://raw.githubusercontent.com/Cattunnel/cattunnel-server/refs/heads/main/scripts/install.sh | sh -s -
 ```
+
+Options follow `sh -s -`:
+
+| Option | Action |
+| --- | --- |
+| `-V 1.5.9.5` | Install a specific version instead of the latest release |
+| `-o DIR` | Choose a directory other than `/opt/trusttunnel` |
+| `-p archive` | Use a local archive. If a sibling `SHA256SUMS` exists, verify it; otherwise warn |
+| `-u` | Uninstall the binary, keeping settings and certificates |
+| `-a y\|n` | Answer the directory ownership question in advance |
+| `-v`, `-h` | Verbose output, help |
+
+```text
+script -> detect OS and CPU -> select latest release or -V
+       -> download archive and SHA256SUMS -> compare hash
+       -> unpack in a temporary directory -> install binary
+       -> keep existing settings and certificates
+```
+
+`SHA256SUMS` comes from the same release and is not signed. The check catches a damaged download, not a replaced release. Prebuilt binaries are available for Linux x86_64 and aarch64; there are no macOS builds. If you build from source, copy `target/release/trusttunnel_endpoint` and `scripts/trusttunnel.service.template` to your install directory manually.
+
+### What next
 
 Generate the configuration with the wizard. It asks for the listen address, users, rules,
 and the certificate (Let's Encrypt, self-signed, or existing files):
@@ -162,7 +184,7 @@ sudo ./trusttunnel_endpoint --setup-wizard
 ```
 
 `sudo` is needed to manage TLS certificates. `./trusttunnel_endpoint --setup-wizard -h` lists the
-non-interactive options. Certificate renewal with Certbot: [CERT_RENEWAL.md](CERT_RENEWAL.md).
+non-interactive options. Certificate renewal with Certbot: [CERT_RENEWAL.en.md](CERT_RENEWAL.en.md).
 
 Run it as a systemd service. The template assumes the binary and the config files are in
 `/opt/trusttunnel` with the default names; edit it if your paths differ:
@@ -173,17 +195,19 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 ```
 
-To update, download or build the new version, stop the service, replace the binary and start it again.
+## Updating
 
-`scripts/install.sh` from upstream downloaded upstream release archives. In this fork it only
-prints a message and exits with an error, so that nobody installs upstream binaries by
-accident.
+Run the same install command again. The script replaces the binary but leaves existing `vpn.toml`, `hosts.toml`, `rules.toml`, `credentials.toml` and certificates in place. A running server keeps using the old binary until the service is restarted. Restart it when convenient:
+
+```shell
+sudo systemctl restart trusttunnel
+```
 
 ## Configuration
 
 The endpoint reads TOML files: `vpn.toml` (main settings), `hosts.toml` (TLS hosts),
 `credentials.toml` (users) and optionally `rules.toml` (connection rules). Full reference:
-[CONFIGURATION.md](CONFIGURATION.md).
+[CONFIGURATION.en.md](CONFIGURATION.en.md).
 
 Keys added or used by this fork:
 
@@ -211,11 +235,11 @@ cd /opt/trusttunnel
 ```
 
 `<address>` is `ip`, `ip:port`, `domain` or `domain:port`. The default output is a
-`tt://?` deep link ([DEEP_LINK.md](DEEP_LINK.md)) that the CatTunnel app imports from text
+`tt://?` deep link ([DEEP_LINK.en.md](DEEP_LINK.en.md)) that the CatTunnel app imports from text
 or a QR code. `--format toml` prints a TOML file for a command-line client. Other options:
 `--name`, `--dns-upstream`, `--client-random-auth-key`, `--subscription-url`,
 `--subscription-only`; see `./trusttunnel_endpoint -h` and
-[CONFIGURATION.md](CONFIGURATION.md#command-line-arguments).
+[CONFIGURATION.en.md](CONFIGURATION.en.md#command-line-arguments).
 
 The exported link does not contain the NineLives settings. A client that should use
 NineLives needs `xhttp_enable`, the path and the server public key in its link; the CatTunnel
@@ -236,7 +260,7 @@ docker compose up -d --build
 
 Without config files the container runs `trusttunnel_endpoint --setup-wizard` (interactive with a TTY, otherwise
 non-interactive from `TT_*` environment variables, see `docker-entrypoint.sh`). Details:
-[DEVELOPMENT.md](DEVELOPMENT.md#run-with-external-configuration-cicd).
+[DEVELOPMENT.en.md](DEVELOPMENT.en.md#run-with-external-configuration-cicd).
 
 ## Documentation
 
@@ -244,14 +268,16 @@ non-interactive from `TT_*` environment variables, see `docker-entrypoint.sh`). 
 | --- | --- |
 | [docs/features.en.md](docs/features.en.md) | Server side of CatTunnel features and their keys |
 | [docs/ninelives.en.md](docs/ninelives.en.md) | NineLives overview, keys, key generation |
-| [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | NineLives wire format (in Russian) |
-| [docs/cattail.md](docs/cattail.md) | CatTail: layer specification, test vectors |
-| [CONFIGURATION.md](CONFIGURATION.md) | All settings and command line options |
-| [PROTOCOL.md](PROTOCOL.md) | Base tunnel protocol (`CONNECT` transport) |
-| [DEEP_LINK.md](DEEP_LINK.md) | `tt://` deep link format |
-| [CERT_RENEWAL.md](CERT_RENEWAL.md) | Certificate renewal with Certbot |
-| [METRICS.md](METRICS.md) | Prometheus metrics |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Building, cross-compiling, Docker, benchmarks |
+| [docs/xhttp-protocol.en.md](docs/xhttp-protocol.en.md) | NineLives wire format |
+| [docs/cattail.en.md](docs/cattail.en.md) | CatTail: layer specification, test vectors |
+| [docs/connect.en.md](docs/connect.en.md) | CONNECT transport and exchange diagrams |
+| [docs/upstream-divergence.en.md](docs/upstream-divergence.en.md) | Differences from TrustTunnel |
+| [CONFIGURATION.en.md](CONFIGURATION.en.md) | All settings and command line options |
+| [PROTOCOL.en.md](PROTOCOL.en.md) | Base tunnel protocol (`CONNECT` transport) |
+| [DEEP_LINK.en.md](DEEP_LINK.en.md) | `tt://` deep link format |
+| [CERT_RENEWAL.en.md](CERT_RENEWAL.en.md) | Certificate renewal with Certbot |
+| [METRICS.en.md](METRICS.en.md) | Prometheus metrics |
+| [DEVELOPMENT.en.md](DEVELOPMENT.en.md) | Building, cross-compiling, Docker, benchmarks |
 | [CHANGELOG.md](CHANGELOG.md) | Changes of this fork, then upstream history |
 
 ## License

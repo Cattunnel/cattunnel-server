@@ -1,183 +1,198 @@
-# TrustTunnel endpoint
+English: [README.en.md](README.en.md)
 
-## Building the library
+# Библиотека trusttunnel
 
-### Prerequisites
+Крейт `trusttunnel` (каталог `lib`) содержит всё, что делает сервер CatTunnel: приём TLS, разбор HTTP/1, HTTP/2 и HTTP/3, туннели, пересылку к целям, обратный прокси, проверку учётных данных, метрики, а в форке ещё NineLives, CatTail и список «только сайт». Бинарник `trusttunnel_endpoint` из каталога `endpoint` тонкая обёртка над этой библиотекой. Имя крейта осталось от TrustTunnel, см. [корневой README](../README.md#имена-оставшиеся-от-апстрима).
 
-- Rust 1.85 or higher: use a preferred way from https://www.rust-lang.org/tools/install
-- libclang 9.0 or higher
+Описано то, что есть в коде. Где сказано «как в TrustTunnel», поведение не менялось, подробности у [апстрима](https://github.com/TrustTunnel/TrustTunnel).
 
-### Building
+## Содержание
 
-Execute the following commands in the Terminal:
+- [Сборка](#сборка)
+- [Пересылка трафика](#пересылка-трафика)
+- [Как соединение попадает в канал](#как-соединение-попадает-в-канал)
+- [Обратный прокси](#обратный-прокси)
+- [Аутентификация](#аутентификация)
+- [Метрики](#метрики)
+- [Что добавлено в форке](#что-добавлено-в-форке)
+- [Лицензия](#лицензия)
+
+## Сборка
+
+Нужны:
+
+- Rust 1.95: версия зафиксирована в `rust-toolchain.toml`, rustup возьмёт её сам;
+- CMake 3.31.6 или новее;
+- libclang 9.0 или новее;
+- компилятор C++.
+
+Команды из корня репозитория:
 
 ```shell
-cargo build
+cargo build            # отладочная сборка
+cargo build --release  # релизная сборка
 ```
 
-to build the debug version, or
+Подробнее о среде и тестах: [DEVELOPMENT.md](../DEVELOPMENT.md).
 
-```shell
-cargo build --release
+## Пересылка трафика
+
+Библиотека принимает соединения клиентов, завёрнутые в HTTP/1, HTTP/2 или HTTP/3 (по QUIC). Какие кодеки включены, задаёт `Settings.listen_protocols` (`http1`, `http2`, `quic`). Куда уходит разобранное соединение, задаёт `Settings.forward_protocol` (`ForwardProtocolSettings`):
+
+- `Direct` (по умолчанию): напрямую к целевому хосту;
+- `Socks5`: через прокси SOCKS5.
+
+### Пересылка ICMP
+
+Необязательная возможность: сервер пересылает ICMP-пакеты клиента. Включается секцией `Settings.icmp` (`IcmpSettings`):
+
+| Ключ | Умолчание | Смысл |
+| --- | --- | --- |
+| `interface_name` | `eth0` в Linux, `en0` в остальных системах | Интерфейс, к которому привязывается ICMP-сокет |
+| `request_timeout_secs` | `3` | Таймаут ICMP-запроса |
+| `recv_message_queue_capacity` | `256` | Размер очереди принятых сообщений; у каждого клиента своя |
+
+Меньшая очередь может терять пакеты, если мультиплексор не успевает, большая тратит больше памяти. На некоторых системах нужны права суперпользователя.
+
+## Как соединение попадает в канал
+
+Канал выбирается в два шага. Сначала по имени SNI в TLS-соединении, потом, для основного хоста, по пути в запросе.
+
+```text
+ TLS-соединение, имя SNI
+   |
+   +-- основной хост (main_hosts) ------------------> канал туннеля
+   +-- хост из reverse_proxy_hosts (если есть
+   |   [reverse_proxy]) ---------------------------> обратный прокси
+   +-- хост из ping_hosts ------------------------> пинг
+   +-- хост из speedtest_hosts -------------------> проверка скорости
+   +-- <данные>.<основной хост> ------------------> канал туннеля, вход по SNI
+   +-- имя из allowed_sni основного хоста --------> канал туннеля
+   '-- любое другое имя --------------------------> отказ
+
+ запрос на канале туннеля, проверки по порядку
+   путь подписки (точное совпадение) ------------> подписка
+   ping_path, если ping_enable ------------------> пинг
+   speedtest_path, если speedtest_enable --------> проверка скорости
+   xhttp_path, если xhttp_enable ----------------> NineLives
+   path_mask, если есть [reverse_proxy] ---------> обратный прокси
+   всё остальное --------------------------------> туннель
 ```
 
-to build the release version.
+Рисунок 1. Выбор канала: сначала по SNI, потом по пути.
 
-## Features description
+Пути `ping_path`, `speedtest_path` и `xhttp_path` сравниваются по началу пути, путь подписки по полному совпадению. Умолчания: `ping_path = "/ping"`, `speedtest_path = "/speedtest"`, `xhttp_path = "/api/v2/"`, `ping_enable = false`, `speedtest_enable = false`, `xhttp_enable = false`.
 
-### Traffic forwarding
+## Обратный прокси
 
-As for now, the endpoint can demultiplex client's connections multiplexed in either HTTP/1, or
-HTTP/2, or HTTP/3 session. An application can set up how the endpoint forwards the demultiplexed
-client's connection by setting `Settings.forward_protocol`. The available options
-(see `settings.ForwardProtocolSettings`) are:
+Запрос идёт в обратный прокси в двух случаях:
 
-- routing a connection directly to its target host
-- routing a connection though a SOCKS5 proxy
+1. SNI совпадает с одним из хостов `TlsHostsSettings.reverse_proxy_hosts`.
+2. Запрос пришёл на основной хост, а его путь начинается с `ReverseProxySettings.path_mask` и не попал под пинг, проверку скорости, NineLives или подписку (порядок на рисунке 1).
 
-#### ICMP forwarding
+Сервер сам завершает TLS и переводит запрос HTTP/x в HTTP/1.1 к исходному серверу (`ReverseProxySettings.server_address`), а ответ обратно в исходный HTTP/x:
 
-As an optional feature, the endpoint can also forward ICMP packets from a client. This feature
-can be set up by setting `Settings.icmp`. An application MUST set up an interface name to bind
-the ICMP socket to, and MAY tweak some other settings, like the timeouts and message queue size.
+```text
+ (клиент) TLS, HTTP/x <---> (сервер CatTunnel) <---> (исходный сервер) HTTP/1.1
+```
 
-### Reverse proxy
+Рисунок 2. Обратный прокси переводит HTTP/x в HTTP/1.1 и обратно.
 
-Client's connection is treated as a reverse proxy stream in the following cases:
+Правила перевода:
 
-1) A TLS session or QUIC connection has the SNI set to the host name equal to one
-   from `TlsHostsSettings.reverse_proxy`.
-2) If a request path starts with `ReverseProxySettings.path_mask`, it is routed to reverse proxy.
-3) Otherwise, routing is defined by `ping_path` and `speedtest_path` configuration.
-   Requests that do not match ping, speedtest, or reverse proxy rules are treated as tunnel requests.
+- В запрос добавляется заголовок `X-Original-Protocol` со значением `HTTP1`, `HTTP2` или `HTTP3`.
+- На каждый запрос сервер открывает новое соединение к исходному серверу и ставит `Connection: close`.
+- Тело запроса отправляется, пока сервер ждёт ответ. Сокет к исходному серверу после тела не закрывается на запись: сервер узнаёт конец тела по длине или по последнему чанку, а половинное закрытие заставило бы его потерять ответ.
+- Если включён `h3_backward_compatibility`, запрос HTTP/3 с методом `GET` и путём `/` уходит к исходному серверу как `CONNECT`.
+- Ключи секции `[reverse_proxy]`: `server_address`, `path_mask` (начинается с `/`), `h3_backward_compatibility`.
 
-The stream is used for mutual client and endpoint notifications and some control messages.
-The endpoint does TLS termination on such connections and translates HTTP/x traffic into
-HTTP/1.1 protocol towards the server and back into original HTTP/x towards the client.
-Like this:
+## Аутентификация
 
-```(client) TLS(HTTP/x) <--(endpoint)--> (server) HTTP/1.1```
+Список пользователей берётся из файла `credentials.toml` (ключ `credentials_file` в `vpn.toml`):
 
-The translated HTTP/1.1 requests have the custom header `X-Original-Protocol` appended.
-For now, its value can be `HTTP1`, `HTTP2`, or `HTTP3`.
+```toml
+[[client]]
+username = "a"
+password = "b"
+```
 
-Note: HTTP/3 reverse proxy handling keeps the write side open when the client finishes sending
-the request body, to avoid truncating large responses.
+У клиента могут быть необязательные `max_http2_conns` и `max_http3_conns`: лимит одновременных соединений HTTP/1 и HTTP/2 и соединений HTTP/3 для этого клиента. По этому списку сервер строит `RegistryBasedAuthenticator` и передаёт его в `Core::new`. Если пользователей нет, проверки учётных данных нет; бинарник предупреждает об этом при запуске на локальном адресе.
 
-### Authentication
+Свою проверку можно подключить, реализовав трейт `authentication::Authenticator` (методы `authenticate` и `username`) и передав его в `Core::new`. Источник учётных данных называется `authentication::Source`: `Sni` или `ProxyBasic`.
 
-#### Client authentication options
+### Способы входа клиента
 
-##### SNI authentication
+**Через SNI.** Клиент подключается с именем `данные.имя_основного_хоста`. Первая метка (до первой точки) должна равняться base64 от `username:password`. Сервер сравнивает метку со списком таких значений, составленным из `credentials.toml`.
 
-A client connects to the endpoint with SNI set to `hash.domain_name`, where:
+**Через заголовок прокси.** Клиент передаёт `Proxy-Authorization: Basic base64(username:password)`.
 
-- `hash` - `md5(application_id + ':' + token + ':' + credentials)`
-- `domain_name` - the endpoint's original domain name (e.g. `myvpn.org`)
+### Аутентификация SOCKS5
 
-##### Proxy authentication
+Если пересылка идёт через SOCKS5 (`forward_protocol.socks5`), сервер проверяет учётные данные не сам, а передаёт их прокси.
 
-A client connects to the endpoint using the proxy HTTP authentication mechanism with
-the "basic" scheme: `Proxy-Authorization: Basic base64(token + ':' + credentials)`.
+**Обычная.** При `extended_auth = false` (по умолчанию) идёт стандартная процедура [RFC 1929](https://datatracker.ietf.org/doc/html/rfc1929):
 
-#### Endpoint authentication methods
+- вход через SNI: логином и паролем служит одна и та же первая метка SNI;
+- вход через заголовок: из base64 берутся `username` и `password`, разделённые первым двоеточием.
 
-An application can set up the authentication method being used by the endpoint
-by setting `Settings.authenticator`. The application can provide its own authenticator
-implementation (see the `authentication.Authenticator` trait), or use one of the implementations
-provided by the library:
-
-- `authentication.DummyAuthenticator` - authenticates any request
-- `authentication.file_based.FileBasedAuthenticator` - authenticates a request basing on
-  the file containing credentials ([see here](#file-based-authenticator))
-- SOCKS5 authentication - delegates authentication to the SOCKS5 forwarder ([see here](#socks5-authenticator))
-
-**Please note**, that the first 2 are very simple authenticator implementations which are intended
-mostly for testing purposes and do not respect network security practices.
-
-##### File based authenticator
-
-The file must contain an application id (`applicationId: <string>`), token (`token: <string>`),
-and credentials (`credentials: <string>`).
-Each one must be on a new line. The order does not matter.
-
-##### SOCKS5 authenticator
-
-###### Standard authentication
-
-In case `Socks5ForwarderSettings.extended_auth` is set to false, the endpoint performs
-the standard authentication procedure according to the
-[RFC 1929](https://datatracker.ietf.org/doc/html/rfc1929).
-
-Depending on the client-side authentication way, the username and password are as follows:
-
-- [SNI authentication](#sni-authentication):
-    - both `username` and `password` = `hash` - corresponds to `hash`, as in
-    [SNI authentication](#sni-authentication)
-
-- [Proxy authentication](#proxy-authentication):
-    - `username` corresponds to `token`, as in [Proxy authentication](#proxy-authentication)
-    - `password` corresponds to `credentials`, as in [Proxy authentication](#proxy-authentication)
-
-###### Extended authentication
-
-The extended authentication uses `0x80` as an authentication method.
-After a server selects this authentication method, a client sends an authentication
-request in the following format:
+**Расширенная.** При `extended_auth = true` используется метод `0x80`. После его выбора сервер шлёт запрос в таком виде:
 
 ```text
 +-----+-----------+-----+--------+
 | VER |   EXT(0)  |     | EXT(n) |
 +-----+-----------+ ... +--------+
-|  1  | see below |     |        |
+|  1  | см. ниже  |     |        |
 +-----+-----------+-----+--------+
 ```
 
-Where:
+Рисунок 3. Запрос расширенной аутентификации SOCKS5.
 
-- `VER` - the current extended authentication version: 0x01
-- `EXT[i]` - an extension in the following format:
+`VER` равен `0x01`. Каждое расширение выглядит так:
 
-   ```text
-   +------+--------+----------+
-   | TYPE | LENGTH |   VALUE  |
-   +------+--------+----------+
-   |  1   |    2   | Variable |
-   +------+--------+----------+
-   ```
+```text
++------+--------+----------+
+| TYPE | LENGTH |  VALUE   |
++------+--------+----------+
+|  1   |   2    | переменн.|
++------+--------+----------+
+```
 
-   Where:
-    - `TYPE` - a type of the extension value (see [`ExtendedAuthenticationValue`])
-    - `LENGTH` - the length of the extension value
-    - `VALUE` - the extension value
+Рисунок 4. Одно расширение (длина в сетевом порядке байт).
 
-Available extensions:
+Типы расширений:
 
-- `TERM`: type = 0x00, length = 0 - terminating extension, marks a message end
-- `DOMAIN`: type = 0x01, length = (0..MAX], value = UTF-8 string - hostname which
-  a client used for the TLS session (SNI)
-- `CLIENT_ADDRESS`: type = 0x02, length = [4|16], value = Bytes - public IP
-  address of the VPN client
-- `USER_AGENT`: type = 0x03, length = (0..MAX], value = UTF-8 string - user agent of the VPN client
-- `PROXY_AUTH`: type = 0x04, length = (0..MAX], value = base64 string - `<credentials>` part of
-  [the Proxy-Authorization header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Proxy-Authorization)
-- `SNI_AUTH`: type = 0x05, length = 0 - marks that the VPN client tries to authenticate using SNI
+| Тип | Имя | Значение |
+| --- | --- | --- |
+| `0x00` | `TERM` | Длина 0; завершает сообщение, обязателен |
+| `0x01` | `DOMAIN` | Строка UTF-8: имя SNI, с которым клиент открыл TLS |
+| `0x02` | `CLIENT_ADDRESS` | 4 или 16 байт: публичный IP-адрес клиента |
+| `0x03` | `USER_AGENT` | Строка UTF-8: `User-Agent` клиента (только если он есть) |
+| `0x04` | `PROXY_AUTH` | Строка base64: значение `Proxy-Authorization` без слова `Basic` |
+| `0x05` | `SNI_AUTH` | Длина 0: клиент входит через SNI |
 
-A message **MUST** end with the `TERM` extension.
+`PROXY_AUTH` и `SNI_AUTH` в одном сообщении не встречаются. Ответ прокси стандартный, как в [RFC 1929](https://datatracker.ietf.org/doc/html/rfc1929#section-2).
 
-The server responds with a standard message as in [the RFC](https://datatracker.ietf.org/doc/html/rfc1929#section-2).
+## Метрики
 
-### Metrics collecting
+Чтобы собирать метрики, включите слушатель секцией `Settings.metrics` (`MetricsSettings`). Он слушает `MetricsSettings.address` по обычному HTTP/1 и отдаёт пути:
 
-In order to collect some metrics of a running endpoint, an application can set up it to listen for
-the metrics collecting requests (see `Settings.metrics`). An endpoint running with this feature
-will listen on the configured address (`MetricsSettings.address`) for plain HTTP/1 requests.
-The following paths are available:
+- `/health-check`: проверка, что сервер жив, ответ `200 OK`;
+- `/metrics`: значения в формате [Prometheus](https://prometheus.io/);
+- `/clients`: JSON по пользователям, только с `per_client_metrics`;
+- `/ja4`: счётчик отпечатков ClientHello (добавлено в форке).
 
-- `/health-check` - used for pinging the endpoint, so it will respond with `200 OK`
-- `/metrics` - used for metrics collecting, so it will respond with a bunch of values according to
-  [the prometheus specification](https://prometheus.io/)
+Список метрик и примеры: [METRICS.md](../METRICS.md).
 
-## License
+## Что добавлено в форке
 
-Apache 2.0
+В библиотеку форк добавил следующее. Каждый пункт описан в своём документе.
+
+- NineLives, второй транспорт из пары HTTP-запросов: [docs/ninelives.md](../docs/ninelives.md).
+- CatTail, необязательный внешний слой на отдельном порту: [docs/cattail.md](../docs/cattail.md).
+- Ответ на `CONNECT` с заголовками обычного веб-сервера и кадры данных по 4096 байт: [docs/connect.md](../docs/connect.md).
+- Склейка ClientHello из нескольких TLS-записей, счёт отпечатков JA4, список адресов «только сайт» (`decoy_only_ips_file`), правки сайта-приманки: [docs/features.md](../docs/features.md).
+- Полный список расхождений с TrustTunnel: [docs/upstream-divergence.md](../docs/upstream-divergence.md).
+
+## Лицензия
+
+Apache 2.0.

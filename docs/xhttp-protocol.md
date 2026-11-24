@@ -1,15 +1,18 @@
-# XHTTP: протокол 1
+Русский текст основной. English: [xhttp-protocol.en.md](xhttp-protocol.en.md)
 
-Этот документ описывает реализованный wire format протокола 1 до X5/N7.
-X5/N7 и обвязка ссылок этапа D ещё требуют реализации и измерений.
-Версии 2 и 3, CDN и Судоку зарезервированы, но не реализованы.
-CONNECT использует свой прежний протокол и не участвует в согласовании XHTTP.
+# NineLives, протокол 1 (внутреннее имя XHTTP)
+
+Документ описывает формат NineLives на проводе: протокол 1, единственный реализованный.
+Имя NineLives стоит в интерфейсах и документах, а в коде, ключах настроек и именах файлов
+остаётся внутреннее имя `xhttp` (`xhttp_enable`, `transport_mode = "xhttp"`, `lib/src/http_xhttp.rs`).
+Обзор со схемами: [ninelives.md](ninelives.md). Версии 2 и 3, режим CDN и Судоку зарезервированы,
+но не реализованы. CONNECT использует свой прежний протокол и не участвует в согласовании.
 
 ## Транспорт и выбор версии
 
 Одна TCP-сессия назначения использует два HTTP/2 streams с одинаковым путём:
-GET `<xhttp_path><sid>` несёт downlink в response body;
-POST с тем же путём несёт uplink в request body. SID — 1..64 ASCII символа
+GET `<xhttp_path><sid>` (по умолчанию `xhttp_path = "/api/v2/"`) несёт downlink в response body;
+POST с тем же путём несёт uplink в request body. SID: от 1 до 64 ASCII символов
 из `A-Z`, `a-z`, `0-9`, `-`, `_`. HTTP-аутентификация применяется до спаривания;
 половины и возобновление должны принадлежать одному владельцу.
 Половина ожидает пару до 30 секунд; число ожидающих сессий ограничено 1024.
@@ -28,11 +31,10 @@ POST с тем же путём несёт uplink в request body. SID — 1..64 
 В C API `transport_mode = nullptr` сохраняет этот выбор.
 `xhttp-cdn` и `sudoku` отклоняются как неподдерживаемые режимы.
 Старый `xhttp_legacy_negotiation` удалён; клиентский TOML parser явно отвергает его.
-C API изменён и требует пересборки потребителей native-библиотеки.
 
 ## Формат кадра
 
-Все целые числа — unsigned big endian. Кадры идут подряд; границы HTTP DATA,
+Все целые числа: unsigned big endian. Кадры идут подряд; границы HTTP DATA,
 TLS records и вызовов чтения не задают границы кадра.
 
 | Поле | Размер | Значение |
@@ -47,10 +49,10 @@ TLS records и вызовов чтения не задают границы ка
 Для более длинного payload заголовок занимает 15 байт:
 `short_length = 0x8000 | (length >> 16)`, затем `long_length = length`.
 Decoder вычисляет `((short_length & 0x7fff) << 16) | long_length`.
-Максимум формата — `0x7fffffff`; реализация ограничивает весь buffered frame
+Максимум формата: `0x7fffffff`; реализация ограничивает весь buffered frame
 2 MiB и отказывает по объявленной превышающей длине до накопления payload.
 Encrypted record дополнительно ограничивает размер plaintext 1 MiB.
-Неизвестный type — ошибка, включая тип внутри успешно проверенного AEAD record;
+Неизвестный type есть ошибка, включая тип внутри успешно проверенного AEAD record;
 его нельзя пропускать как расширение.
 
 | type | Имя | Payload и offset |
@@ -108,7 +110,7 @@ ASCII("cattunnel-xhttp-handshake-v1")
 
 Статический серверный Ed25519 seed подписывает transcript;
 клиент проверяет подпись закреплённым публичным ключом.
-Общий секрет — X25519 с новыми ephemeral keys обеих сторон.
+Общий секрет: X25519 с новыми ephemeral keys обеих сторон.
 HKDF-SHA256 использует salt `SHA256(transcript)` и IKM = shared secret;
 16-байтовые AES-128-GCM keys выводятся раздельно с info
 `ASCII("cattunnel-xhttp-v1 c2s")` и `ASCII("cattunnel-xhttp-v1 s2c")`.
@@ -117,7 +119,7 @@ HELLO и HELLO_ACK передаются открытыми XHTTP-кадрами.
 После handshake каждый отправленный кадр шифруется в record:
 `ciphertext_length:u32 || AES-GCM ciphertext || tag[16]`.
 Длина включает tag, исключает 4-байтовый header; допустимо 16..1048592 байт.
-AAD — точные ASCII bytes SID.
+AAD: точные ASCII bytes SID.
 Nonce: `direction:u8 || 00 00 00 || counter:u64`; direction 1 для c2s, 2 для s2c.
 Независимые counters начинаются с 0; значение `u64::MAX` не используется,
 переполнение даёт ошибку. Потерянный или повторённый record нарушает
@@ -125,9 +127,25 @@ Nonce: `direction:u8 || 00 00 00 || counter:u64`; direction 1 для c2s, 2 дл
 
 Rust transport использует `RecordSealer: Send` / `RecordOpener: Send` через
 boxed states; suite 1 и фабрика handshake находятся в `lib/src/xhttp_crypto.rs`.
-В C++ единственная граница — класс `XhttpCrypto`, transport не выводит ключи.
+В C++ клиента единственная граница: класс `XhttpCrypto`, transport не выводит ключи.
 Общий deterministic vector: `lib/tests/fixtures/xhttp_suite1.json` и клиентский
-`core/test/xhttp_suite1_vector.h` (X25519, transcript hash, подпись, HKDF, оба records).
+`core/test/xhttp_suite1_vector.h` (в дереве движка клиента) (X25519, transcript hash, подпись, HKDF, оба records).
+
+```text
+ клиент                                               сервер
+   |== POST /<xhttp_path><sid>, тело запроса открыто ==>|
+   |== GET  /<xhttp_path><sid> ========================>|
+   |   HELLO (в теле POST) ---------------------------->|
+   |<------------------------ HELLO_ACK (в теле ответа GET)
+   |   дальше каждый кадр лежит в AEAD-записи           |
+   |   OPEN host:port --------------------------------->|
+   |<-------------------------------------- RESUME_TOKEN|
+   |<------------------------------------------ DATA ...|
+   |   DATA ... ---------------------------------------->|
+```
+
+Рисунок 1. Начало шифрованной сессии. Порядок прихода GET и POST не важен: сервер ждёт пару до 30 секунд.
+Без настроенного ключа HELLO и HELLO_ACK пропускаются, а OPEN идёт открыто внутри TLS.
 
 ## Возобновление
 
@@ -146,8 +164,8 @@ proof = HMAC-SHA256(RESUME_TOKEN,
     || up_confirmed:u64 || down_received:u64 || challenge[32])
 ```
 
-`up_confirmed` — последний известный клиенту ACK upload;
-`down_received` — принятый клиентом download offset.
+`up_confirmed`: последний известный клиенту ACK upload;
+`down_received`: принятый клиентом download offset.
 Proof проверяется constant-time до отмены прежних pumps и изменения offsets;
 неверный proof даёт HTTP 403 и оставляет старый транспорт работающим.
 Offsets проверяются до отмены и ещё раз после возврата старых socket guards.
@@ -160,6 +178,20 @@ replay range. Replay и ACK повторяются с исходными offsets
 Исходный токен сохраняется. Открытое возобновление шифрованной сессии запрещено.
 `xhttp_resume_timeout = 0` отключает возобновление.
 Таймауты ожидания replacement GET/guards и финального ACK ограничены 10 секундами.
+
+```text
+ клиент                                               сервер
+   |  прежняя пара GET/POST оборвана, сессия жива до xhttp_resume_timeout
+   |== GET  тот же SID =================================>|
+   |<== 200, x-xhttp-challenge: base64(32 байта) =========|
+   |== POST тот же SID =================================>|
+   |   HELLO -> HELLO_ACK (только в шифрованной сессии)   |
+   |   RESUME: up_confirmed, down_received, proof ------->|  проверка proof
+   |                                                      |  неверно: HTTP 403
+   |<== повтор данных с названных offsets ================>|
+```
+
+Рисунок 2. Возобновление сессии новой парой запросов.
 
 ## FIN, flow control и память
 
@@ -177,8 +209,8 @@ Download сохраняется до cancellable send и удерживаетс�
 При полном окне downlink ждёт подтверждения. HTTP/2 wire credit учитывается
 отдельно от application offsets, включая заголовки XHTTP и AEAD overhead.
 
-B12 ограничивает XHTTP-owned buffers глобальным `xhttp_memory_limit`:
-default — четверть min(physical RAM, cgroup limit), clamp 64..512 MiB,
+Бюджет памяти ограничивает XHTTP-owned buffers глобальным `xhttp_memory_limit`:
+по умолчанию четверть min(physical RAM, cgroup limit), clamp 64..512 MiB,
 fallback 64 MiB. Для 2 GiB default равен 512 MiB.
 Новая сессия резервирует base 256 KiB; отказ резерва даёт HTTP 503,
 не вытесняя существующие сессии. Replay blocks и decoder growth получают
@@ -209,9 +241,5 @@ Uplink при отказе decoder reserve закрывает транспорт
 не добавляется криптография в transport. Новый type/bit получает определение,
 правила допустимости по фазам и версии, отрицательные parser tests и общий
 межъязыковой vector. По длине или при ошибке fallback не выполняется.
-Тег `transport_mode` в `tt://` относится к будущей обвязке этапа D и здесь
-не объявляется уже реализованным.
 
-Каждое изменение формы трафика требует D2/D3 до/после на одном стенде,
-минимум три повтора, browser download/upload reference и пару TLS соединений
-XMUX. Зелёные unit tests не заменяют эти измерения и не разрешают выпуск.
+Какие поля NineLives клиент получает в ссылке `tt://`: [ninelives.md](ninelives.md#8-клиентская-сторона).

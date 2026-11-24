@@ -1,42 +1,52 @@
-# fastlane for `vpn-libs-endpoint`
+English: [README.en.md](README.en.md)
 
-## Purpose
+# fastlane
 
-This directory contains the fastlane automation used for macOS release signing
-and notarization of:
+Каталог принадлежит апстриму (TrustTunnel) и в форке не менялся. В нём автоматизация подписи и нотаризации под macOS для бинарника `trusttunnel_endpoint`. Её вызывает CI апстрима ([`bamboo-specs/deploy.yaml`](../bamboo-specs/deploy.yaml)), а у CatTunnel server нет macOS-релизов: в [релизах](https://github.com/Cattunnel/cattunnel-server/releases) только Linux (см. [README](../README.md#готовые-сборки)). Для сборки и запуска сервера этот каталог не нужен.
 
-- `trusttunnel_endpoint`
+Описание ниже сохранено для тех, кто собирает подписанный macOS-бинарник сам и имеет свои учётные данные.
 
-The flow was adapted from `trusttunnel-client` to fit the Cargo-based endpoint
-repository.
+## Назначение
 
-## Prerequisites
+Подпись сертификатом Developer ID и нотаризация `trusttunnel_endpoint`. Схема взята у клиента TrustTunnel и подогнана под репозиторий на Cargo.
 
-Make sure the macOS build environment provides:
+```text
+ fastlane remove_certs   (убрать старую связку ключей)
+        |
+ fastlane certs          (взять сертификат Developer ID через match)
+        |
+ сборка и подпись бинарника
+        |
+ fastlane notari id:"<bundle_id>" bundle:"<путь_к_бинарнику>"
+        |
+ fastlane remove_certs   (убрать связку ключей)
+```
 
-- Xcode command line tools
-- Ruby with Bundler support
-- access to the signing certificate repository used by `match`
-- App Store Connect API credentials via Bamboo environment variables
+Рисунок 1. Порядок вызова линий в CI апстрима (`bamboo-specs/deploy.yaml`).
 
-If Xcode command line tools are missing, install them with:
+## Что нужно
+
+- Командные инструменты Xcode
+- Ruby с Bundler
+- доступ к репозиторию сертификатов, который использует `match`
+- ключ App Store Connect API (переменные окружения Bamboo)
+
+Если инструментов Xcode нет:
 
 ```sh
 xcode-select --install
 ```
 
-Install Ruby dependencies with:
+Зависимости Ruby (`Gemfile` в корне репозитория):
 
 ```sh
 bundle config --local path '.bundle/vendor'
 bundle install
 ```
 
-## Environment
+## Окружение
 
-Example defaults are provided in `.env.default`.
-
-Important environment variables include:
+Значения по умолчанию лежат в `.env.default`. Главные переменные:
 
 - `BUILD_DIR`
 - `MATCH_GIT_URL`
@@ -48,7 +58,7 @@ Important environment variables include:
 - `bamboo_appStoreConnectApiKeyIssuerId`
 - `bamboo_appStoreConnectApiKeyBase64Password`
 
-## Available lanes
+## Линии
 
 ### `certs`
 
@@ -56,7 +66,7 @@ Important environment variables include:
 [bundle exec] fastlane certs
 ```
 
-Syncs the Developer ID signing identity required for macOS release signing.
+Загружает сертификат Developer ID, нужный для подписи под macOS.
 
 ### `remove_certs`
 
@@ -64,7 +74,7 @@ Syncs the Developer ID signing identity required for macOS release signing.
 [bundle exec] fastlane remove_certs
 ```
 
-Removes the temporary local keychain created for signing.
+Удаляет временную локальную связку ключей, созданную для подписи.
 
 ### `notari`
 
@@ -72,16 +82,15 @@ Removes the temporary local keychain created for signing.
 [bundle exec] fastlane notari id:"<bundle_id>" bundle:"<path_to_binary>"
 ```
 
-Notarizes the specified binary using the default App Store Connect credentials.
+Отправляет бинарник на нотаризацию с ключом App Store Connect по умолчанию.
 
-Required options:
+Обязательные параметры:
 
-- `id`: bundle identifier used for notarization
-- `bundle`: path to the signed binary
+- `id`: идентификатор пакета для нотаризации
+- `bundle`: путь к подписанному бинарнику
 
-## Notes
+## Примечания
 
-- Executables are compressed into a temporary archive before notarization.
-- Stapling is intentionally skipped for executables.
-- This directory is maintained manually for the endpoint repository and is not
-  auto-generated.
+- Перед нотаризацией исполняемые файлы сжимаются во временный архив.
+- Stapling для исполняемых файлов намеренно пропущен.
+- Каталог ведётся вручную и не генерируется.

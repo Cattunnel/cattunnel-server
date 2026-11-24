@@ -1,27 +1,27 @@
-## Related Issue
+## Связанная задача (Related issue)
 
-<!-- Every non-trivial PR must reference an existing issue. -->
+<!-- Каждый нетривиальный PR ссылается на существующую задачу. / Every non-trivial PR must reference an existing issue. -->
 
-Closes #<!-- issue number -->
+Closes #<!-- номер задачи / issue number -->
 
-## Summary
+## Кратко (Summary)
 
-<!-- Briefly describe what this PR does and why. -->
+<!-- Что делает этот PR и зачем. / What this PR does and why. -->
 
-## Changes
+## Изменения (Changes)
 
-<!-- List the key changes made in this PR. -->
+<!-- Основные изменения. / The key changes. -->
 
 -
 
-## Tests
+## Проверка (Tests)
 
-- [ ] New or updated tests cover the changes
-- [ ] All existing tests pass (`make test`)
-- [ ] Benchmarks updated (if performance-relevant)
+- [ ] Новые или обновлённые тесты покрывают изменения
+- [ ] Все существующие тесты проходят (`make test`)
+- [ ] Бенчмарки обновлены (если изменение влияет на скорость)
 
-## Checklist
+## Чек-лист (Checklist)
 
-- [ ] Documentation updated (if applicable)
-- [ ] CHANGELOG.md updated (if user-visible change)
-- [ ] No secrets or credentials committed
+- [ ] Документация обновлена: русский `X.md` и английский `X.en.md` (если применимо)
+- [ ] CHANGELOG.md обновлён (если изменение видно пользователю)
+- [ ] В коммитах нет секретов и учётных данных

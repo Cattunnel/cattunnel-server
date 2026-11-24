@@ -1,46 +1,106 @@
-# TrustTunnel Endpoint Binary
+English: [README.en.md](README.en.md)
 
-A standalone application that allows any user to easily set up their own VPN server.
+# Бинарник trusttunnel_endpoint
 
----
+Самостоятельная программа: сервер CatTunnel, который можно поставить одной командой. Это тонкая обёртка над библиотекой [`trusttunnel`](../lib/README.md). Имя бинарника осталось от TrustTunnel, см. [корневой README](../README.md#имена-оставшиеся-от-апстрима).
 
-## Configuration
+## Запуск
 
-- **Configuration via TOML Files:** The VPN endpoint binary utilizes TOML formatted
-  files for configuration.
-  The following files are used:
-    - Library Settings File: This file contains the configuration of the underlying library and
-      reflects the `Settings` struct.
-    - TLS Hosts Settings File: This file defines the TLS hosts that the endpoint can represent to
-      the client side.
-      Different types of hosts are available, each serving a specific purpose.
-      It reflects the `TlsHostsSettings` struct.
+```shell
+trusttunnel_endpoint vpn.toml hosts.toml
+```
 
-- **Additional Configuration Requirements:** In addition to the TOML files, two additional items are
-  required for configuration:
-    - Credentials File: This file contains user authentication data.
-    - Certificate Files: These files correspond to the TLS hosts defined in the TLS hosts settings.
+Два пути обязательны (кроме запуска с `--version` и `--setup-wizard`): файл основных настроек и файл TLS-хостов. Остальное задают ключи командной строки и файлы, на которые указывают эти два.
 
-- **Setup Wizard Tool:** The endpoint binary includes a setup wizard. Run
-  `trusttunnel_endpoint --setup-wizard` to generate the required settings and files. Refer to the
-  [usage instructions](../README.md#usage) for quick setup instructions.
+## Настройка
 
-- **Command Line Configuration:** The VPN endpoint binary supports additional configuration options
-  through command line arguments. Users can customize the behavior of the endpoint according to
-  their specific requirements. To view the available options, run the following command in the
-  Terminal:
+- **Файлы TOML.** Сервер читает два файла. Первый (`vpn.toml`) соответствует структуре `Settings` библиотеки. Второй (`hosts.toml`) определяет TLS-хосты, которые сервер предъявляет клиентам, и соответствует структуре `TlsHostsSettings`. Хосты бывают разных видов, у каждого своя задача.
+- **Ещё нужны.** Файл с учётными данными пользователей (`credentials.toml`, путь в ключе `credentials_file` файла `vpn.toml`) и файлы сертификатов, на которые ссылаются TLS-хосты. Необязательный файл правил `rules.toml` задаёт ключ `rules_file`.
+- **Мастер настройки.** `trusttunnel_endpoint --setup-wizard` создаёт нужные файлы. Ключ `--setup-wizard` должен стоять первым в командной строке, иначе программа выйдет с ошибкой. Параметры для запуска без вопросов показывает `trusttunnel_endpoint --setup-wizard -h`. Быстрая установка: [README.md](../README.md#установка-и-запуск).
+- **Ключи командной строки.** Полный список: `trusttunnel_endpoint -h`. Справочник всех настроек и ключей: [CONFIGURATION.md](../CONFIGURATION.md).
 
-   ```shell
-   trusttunnel_endpoint -h
-   ```
+Основные ключи:
 
----
+| Ключ | Умолчание | Что делает |
+| --- | --- | --- |
+| `-v`, `--version` | нет | Печатает версию и выходит |
+| `-l`, `--loglvl` | `info` | Уровень журнала: `info`, `debug`, `trace` |
+| `--logfile` | stdout | Файл для журнала |
+| `--jobs` | число процессоров | Число рабочих потоков |
+| `--sentry_dsn` | не задан | Адрес Sentry для отчётов об ошибках; без него Sentry не запускается |
+| `-c`, `--client_config <имя>` | нет | Печатает настройки клиента для пользователя и выходит, см. ниже |
 
-## Additional Features
+На Unix при запуске лимит открытых файлов поднимается до меньшего из жёсткого лимита и 65536.
 
-## Dynamic Reloading of TLS Host Settings
+## Выдача настроек клиента
 
-The endpoint supports dynamic reloading of TLS host settings.
-When the SIGHUP signal is sent to the endpoint process,
-it will update and reload the TLS host settings on-the-fly without requiring a restart
-of the binary.
+Ключ `-c` (`--client_config`) печатает настройки подключения для пользователя из `credentials.toml` и сразу завершает программу, сервер при этом не запускается. Остальные ключи этого режима:
+
+| Ключ | Умолчание | Что делает |
+| --- | --- | --- |
+| `-a`, `--address` | нет | Адрес сервера для клиента: `ip`, `ip:port`, `domain` или `domain:port`. Порт по умолчанию берётся из `listen_address`. Можно повторять. Без него берётся адрес из `[subscription]`, если подписка включена |
+| `-s`, `--custom-sni` | нет | Своё имя SNI; должно совпадать с `hostname` или `allowed_sni` основного хоста |
+| `-r`, `--client-random-prefix` | нет | Префикс `client_random` (hex); для него должно быть правило в `rules.toml` |
+| `--client-random-auth-key` | нет | Ключ для `client_random` (hex); правило с этим ключом должно быть в `rules.toml`. Не сочетается с `-r` и `--generate-client-random-prefix` |
+| `--generate-client-random-prefix` | нет | Создаёт новый префикс, дописывает разрешающее правило в `rules.toml` и кладёт префикс в настройки |
+| `--prefix-length` | `4` | Длина создаваемого префикса в байтах |
+| `--prefix-percent` | `70` | Доля единичных битов в маске |
+| `--prefix-mask` | нет | Своя маска в hex; не сочетается с `--prefix-length` и `--prefix-percent` |
+| `-f`, `--format` | `deeplink` | `deeplink` печатает ссылку `tt://?`, `toml` печатает файл настроек клиента |
+| `-n`, `--name` | нет | Имя сервера для показа в приложении |
+| `-d`, `--dns-upstream` | нет | DNS-апстрим для настроек клиента; можно повторять |
+| `--subscription-url` | из `[subscription]` | Своя базовая часть адреса подписки; логин и пароль добавляются из `credentials.toml` |
+| `--subscription-only` | нет | Ссылка только с подпиской, без статических параметров |
+
+Пример:
+
+```shell
+trusttunnel_endpoint vpn.toml hosts.toml -c alice -a vpn.example.com
+```
+
+```text
+ vpn.toml + hosts.toml + credentials.toml
+   |
+   v
+ -c alice: пользователь есть в credentials.toml? иначе ошибка
+   |
+   +-- адреса: из -a, иначе из [subscription], иначе ошибка
+   +-- -s: имя есть в hosts.toml? иначе ошибка
+   +-- -r или --client-random-auth-key (если задан rules_file): правило есть и оно не deny? иначе ошибка
+   |   (--generate-client-random-prefix: правило дописывается)
+   v
+ --format deeplink -> ссылка tt://?... и адрес страницы с QR-кодом
+ --format toml     -> файл настроек клиента
+ (сервер не запускается, программа завершается)
+```
+
+Рисунок 1. Что происходит при `-c`.
+
+В настройки всегда попадает имя первого основного хоста из `hosts.toml`. Значения, которых нет среди ключей, фиксированы: `has_ipv6 = true`, `skip_verification = false`, `upstream_protocol = "http2"`, `anti_dpi = false`. Сертификат сервер кладёт в настройки, если системные корневые сертификаты его не проверяют. Тег `tls_profile` сервер не добавляет. Формат ссылки: [DEEP_LINK.md](../DEEP_LINK.md).
+
+## Перезагрузка по сигналу
+
+Сигнал `SIGHUP` перечитывает файл TLS-хостов и секцию `[subscription]` файла `vpn.toml` без перезапуска.
+
+```text
+ kill -HUP <pid>
+   |
+   v
+ перечитать hosts.toml ----------> применить TLS-хосты
+   |                               (ошибка чтения или разбора: процесс завершается)
+   v
+ перечитать [subscription] из vpn.toml
+   |
+   +-- верно  -> применить подписку
+   '-- ошибка -> записать в журнал, оставить прежнюю подписку
+```
+
+Рисунок 2. Порядок перезагрузки по `SIGHUP`.
+
+Остальные ключи `vpn.toml` по `SIGHUP` не перечитываются: для них нужен перезапуск. Файл TLS-хостов проверьте до отправки сигнала, потому что программа завершается, если не может его прочитать или применить.
+
+`Ctrl+C` (`SIGINT`) начинает завершение: сервер подаёт задачам сигнал остановки и ждёт, пока они закончат.
+
+## Лицензия
+
+Apache 2.0.

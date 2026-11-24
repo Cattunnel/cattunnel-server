@@ -1,250 +1,246 @@
-# TrustTunnel Deep Link Specification
+English: [DEEP_LINK.en.md](DEEP_LINK.en.md)
 
-This document describes the deep link URI scheme used to share TrustTunnel
-endpoint configurations between devices and applications.
+# Ссылка подключения tt://
 
-Status: version 2
+Ссылка `tt://` переносит настройки подключения к серверу с одного устройства на другое: один URI вместо набора полей. Формат создан в TrustTunnel, CatTunnel его не менял. Крейт `deeplink` форка совпадает с крейтом TrustTunnel версии 1.3.1: различий в коде нет. Такую ссылку делает сам сервер (`trusttunnel_endpoint`, ключ `-c`) и крейт [`trusttunnel-deeplink`](deeplink/README.md).
 
-- version 2: Added the subscription_url field; static connection parameters
-  are optional when it is present.
-- version 1: Added fields for version, server display name, and DNS upstreams.
-- draft 2: Changed format to tt://? to use case-sensitive URL part (query) instead of case-insensitive (host)
-- draft 1: Initial specification
+В формате нет полей для NineLives и CatTail. Их параметры в `tt://` не передаются, см. [docs/upstream-divergence.md](docs/upstream-divergence.md), раздел B4.
 
-Version 2 shipped with `subscription_url`. The optional tags `0x0F`
-(`client_random_auth_key`) and `0x10` (`tls_profile`) were added later
-without changing the version. Clients that do not implement a tag ignore it
-and fall back to their default behavior.
+## Содержание
 
-`0x10` (`tls_profile`) carries a numeric `TlsProfile` identifier. A
-profile-name string form of this tag existed only in the withdrawn
-`1.3.0-rc.3` pre-release. This specification rejects that string form, and a
-client that implements it must be updated to read the numeric form.
+- [Версии](#версии)
+- [Формат URI](#формат-uri)
+- [Двоичная полезная нагрузка](#двоичная-полезная-нагрузка)
+- [Теги](#теги)
+- [Правила кодирования и разбора](#правила-кодирования-и-разбора)
+- [Как сервер выдаёт ссылку](#как-сервер-выдаёт-ссылку)
+- [Примеры](#примеры)
+- [Версионирование](#версионирование)
+- [Безопасность](#безопасность)
 
----
+## Версии
 
-## URI Format
+Текущая версия формата 2 (константа `CURRENT_VERSION` в крейте).
+
+| Версия | Что изменилось |
+| --- | --- |
+| 2 | Поле `subscription_url`; при его наличии статические параметры подключения необязательны |
+| 1 | Поля версии, отображаемого имени сервера и DNS-апстримов |
+| черновик 2 | Формат `tt://?` вместо `tt://`: данные в запросе, а не в имени хоста, потому что регистр в запросе сохраняется |
+| черновик 1 | Первая редакция |
+
+Теги `0x0F` (`client_random_auth_key`) и `0x10` (`tls_profile`) добавлены позже без смены версии. Клиент, который тега не знает, пропускает его и работает по умолчаниям.
+
+Тег `0x10` хранит числовой идентификатор профиля. В пререлизе TrustTunnel `1.3.0-rc.3` в нём лежало имя профиля строкой. Разборщик принимает только числовую форму, так что клиент, который ждёт строку, надо обновить.
+
+## Формат URI
 
 ```uri
-tt://?<base64url-encoded payload>
+tt://?<base64url-полезная нагрузка>
 ```
 
-- **Scheme**: `tt`
-- **Payload**: The endpoint configuration is serialized into a binary format,
-  then encoded using [Base64url](https://datatracker.ietf.org/doc/html/rfc4648#section-5)
-  (URL-safe Base64 without padding).
+- Схема: `tt`.
+- Полезная нагрузка: настройки в двоичном виде, закодированные [Base64url](https://datatracker.ietf.org/doc/html/rfc4648#section-5) без заполнителей `=`.
 
-### Why Base64url?
+Base64url заменяет `+` и `/` на `-` и `_`, поэтому результат вставляется в URI без экранирования. Кодировщик всегда пишет префикс `tt://?`. Разборщик принимает и `tt://?`, и `tt://` без вопросительного знака.
 
-Standard Base64 uses `+` and `/` characters that require percent-encoding in
-URIs. Base64url replaces them with `-` and `_`, making the result safe to embed
-directly in a URI without escaping. Padding (`=`) is omitted.
+```text
+ настройки (DeepLinkConfig)
+   |  проверка: нужные поля есть, subscription_url начинается с https://
+   v
+ TLV-записи: версия, затем поля в фиксированном порядке
+   |
+   v
+ один буфер байт
+   |  Base64url без заполнителей
+   v
+ tt://?AAECAQ92cG4uZXhhbXBsZS5jb20...
+```
 
----
+Рисунок 1. Как настройки превращаются в ссылку.
 
-## Binary Payload Format
+## Двоичная полезная нагрузка
 
-The payload is a compact binary encoding of the endpoint configuration fields
-exported by `trusttunnel_endpoint`.
+Каждое поле записывается как тройка тег, длина, значение (TLV):
 
-### Wire Layout
-
-Each field is encoded as a **Tag–Length–Value (TLV)** entry:
-
-| Component | Encoding | Description |
+| Часть | Кодирование | Смысл |
 | --- | --- | --- |
-| **Tag** | TLS varint | Field identifier (see table below) |
-| **Length** | TLS varint | Byte length of the value that follows |
-| **Value** | *Length* bytes | Field-specific payload |
+| Тег | varint TLS | Номер поля, таблица ниже |
+| Длина | varint TLS | Сколько байт занимает значение |
+| Значение | столько байт, сколько указано в длине | Содержимое поля |
 
-A parser MUST ignore unknown tags to allow forward-compatible extensions.
-
-### TLS Variable-Length Integer Encoding
-
-Tag and Length use the variable-length integer encoding defined in
-[RFC 9000 §16](https://www.rfc-editor.org/rfc/rfc9000.html#section-16)
-(QUIC / TLS 1.3). The two most-significant bits of the first byte encode the
-length of the integer:
-
-| 2-MSB | Integer size | Usable bits | Max value |
-| --- | --- | --- | --- |
-| `00` | 1 byte | 6 | 63 |
-| `01` | 2 bytes | 14 | 16 383 |
-| `10` | 4 bytes | 30 | 1 073 741 823 |
-| `11` | 8 bytes | 62 | 4 611 686 018 427 387 903 |
-
-Multi-byte varints are in **network byte order** (big-endian). In practice,
-current tags fit in a single byte (`00` prefix) and lengths under 16 384 fit
-in one or two bytes.
-
-### Value Types
-
-| Type | Description |
-| --- | --- |
-| VarInt | TLS variable-length integer (see encoding above) |
-| Byte | 1 byte: an unsigned integer in the range `0x00`..`0xFF` |
-| Bool | 1 byte: `0x01` = true, `0x00` = false |
-| String | UTF-8 encoded bytes |
-| Bytes | Raw binary data |
-| String[] | Length-prefixed sequence of strings: each element is encoded as a VarInt length followed by UTF-8 bytes. The TLV value field contains the concatenation of all length-prefixed elements. |
-
-### Field Tags
-
-| Tag | Field | Value type | Value encoding | Required |
-| --- | --- | --- | --- | --- |
-| `0x00` | `version` | VarInt | Deep link format version (see Versioning below) | no (default `0`) |
-| `0x01` | `hostname` | String | UTF-8 string | yes * |
-| `0x02` | `addresses` | String | UTF-8, one `address:port` per entry; multiple entries are encoded as separate TLVs with the same tag | yes * |
-| `0x03` | `custom_sni` | String | UTF-8 string | no |
-| `0x04` | `has_ipv6` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `true`) |
-| `0x05` | `username` | String | UTF-8 string | yes * |
-| `0x06` | `password` | String | UTF-8 string | yes * |
-| `0x07` | `skip_verification` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
-| `0x08` | `certificate` | Bytes | Concatenated DER-encoded certificates (raw binary); omit if the chain is verified by system CAs | no |
-| `0x09` | `upstream_protocol` | Byte | 1 byte: `0x01` = `http2`, `0x02` = `http3` | no (default `http2`) |
-| `0x0A` | `anti_dpi` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
-| `0x0B` | `client_random_prefix` | String | UTF-8 hex-encoded string in the following format: `prefix[/mask]` | no |
-| `0x0C` | `name` | String | Human-readable server name for display in the client UI | no |
-| `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
-| `0x0E` | `subscription_url` | String | HTTPS subscription URL; may embed HTTP Basic Auth credentials in the userinfo component | no |
-| `0x0F` | `client_random_auth_key` | String | UTF-8 hex-encoded auth key; the client derives its TLS `client_random` from it and the SNI | no |
-| `0x10` | `tls_profile` | Byte | 1 byte: `0x00` = `chrome`, `0x01` = `chrome_canary`, `0x02` = `safari`, `0x03` = `firefox`, `0x04` = `okhttp`, `0x05` = `openssl`, `0x06` = `boringssl` (no mimicry) | no (default `chrome`) |
-
-\* Required unless the `subscription_url` tag (`0x0E`) is present. When
-`subscription_url` is present, all static connection parameters are OPTIONAL
-and serve as a fallback for the initial connection attempt if the first
-subscription fetch fails.
-
-The `tls_profile` values are defined by this format and match
-[`VpnTlsProfile`](https://github.com/TrustTunnel/TrustTunnelClient/blob/main/common/include/vpn/utils.h)
-in TrustTunnelClient. The client configuration uses names for the same
-profiles. A parser MUST reject a `tls_profile` value it does not know. When the
-tag is absent, the client uses `chrome`.
-
-### Encoding Rules
-
-1. Fields MAY appear in any order.
-2. Tag `0x02` (`addresses`) MAY appear more than once; each occurrence adds one
-   address to the list. All other tags MUST appear at most once; if duplicated,
-   the last occurrence wins.
-3. Boolean fields that match their default value MAY be omitted to save space.
-4. A parser MUST reject a payload that is missing any required field and does
-   not contain a `subscription_url` tag.
-5. Encoders conforming to this document MUST emit `version` = 2.
-6. When tag `0x0E` (`subscription_url`) is present, any other tag MAY be
-   omitted. A "subscription-only" payload contains only tags `0x00` and
-   `0x0E`; clients importing it must complete a successful subscription fetch
-   before they can connect.
-7. A parser MUST reject a `subscription_url` value that does not start with
-   `https://`.
-
----
-
-## Example
-
-Given the following exported endpoint configuration:
-
-```toml
-hostname = "vpn.example.com"
-addresses = ["1.2.3.4:443"]
-custom_sni = "example.org"
-has_ipv6 = true
-username = "premium"
-password = "s3cretPass"
-skip_verification = false
-certificate = """
------BEGIN CERTIFICATE-----
-MIIDijCCAxGgAwIBAgISBcSirIQr2Y8pK6reoWtJhyXZMAoGCCqGSM49BAMDMDIx
-...
------END CERTIFICATE-----
-"""
-upstream_protocol = "http2"
-anti_dpi = false
+```text
+ +-----------+-----------+-----------------------------+
+ |    Тег    |   Длина   |          Значение           |
+ |  varint   |  varint   | столько байт, сколько в     |
+ |           |           | длине; тип задаёт тег       |
+ +-----------+-----------+-----------------------------+
+   1 байт      1-2 байта
+   (теги < 64) (длины < 16384)
 ```
 
-### Encoding Steps
+Рисунок 2. Одна TLV-запись.
 
-1. **Serialize** each field into TLV entries:
+### Целые переменной длины
 
-   ```text
-   Tag=0x01  Len=15  Value="vpn.example.com"
-   Tag=0x02  Len=11  Value="1.2.3.4:443"
-   Tag=0x03  Len=11  Value="example.org"
-   Tag=0x04  Len=1   Value=0x01              (has_ipv6 = true)
-   Tag=0x05  Len=7   Value="premium"
-   Tag=0x06  Len=10  Value="s3cretPass"
-   Tag=0x08  Len=N   Value=<concatenated DER bytes of the certificate chain>
-   Tag=0x09  Len=1   Value=0x01              (http2)
-   ```
+Тег и длина используют кодирование [RFC 9000, раздел 16](https://www.rfc-editor.org/rfc/rfc9000.html#section-16) (QUIC и TLS 1.3). Два старших бита первого байта задают размер числа:
 
-   Fields at their default value (`skip_verification = false`,
-   `anti_dpi = false`) are omitted.
+| Старшие 2 бита | Размер | Полезных бит | Максимум |
+| --- | --- | --- | --- |
+| `00` | 1 байт | 6 | 63 |
+| `01` | 2 байта | 14 | 16 383 |
+| `10` | 4 байта | 30 | 1 073 741 823 |
+| `11` | 8 байт | 62 | 4 611 686 018 427 387 903 |
 
-2. **Concatenate** all TLV entries into a single byte buffer.
+Многобайтные числа идут в сетевом порядке байт (старший первым). Теги сейчас помещаются в один байт, длины до 16 383 занимают один или два байта.
 
-3. **Base64url-encode** the buffer (no padding).
+### Типы значений
 
-4. **Construct** the URI:
+| Тип | Что это |
+| --- | --- |
+| VarInt | Целое переменной длины, как выше |
+| Byte | Один байт, `0x00`..`0xFF` |
+| Bool | Один байт: `0x01` истина, `0x00` ложь; любой другой байт или другая длина дают ошибку |
+| String | Строка UTF-8 |
+| Bytes | Сырые байты |
+| String[] | Последовательность строк: у каждой сначала длина (VarInt), затем байты UTF-8. Значением TLV служит склейка всех элементов |
 
-   ```uri
-   tt://?AQAL...  (full Base64url string)
-   ```
+## Теги
 
----
+| Тег | Поле | Тип | Что внутри | Обязательно |
+| --- | --- | --- | --- | --- |
+| `0x00` | `version` | VarInt | Версия формата | нет (по умолчанию `0`) |
+| `0x01` | `hostname` | String | Имя сервера | да * |
+| `0x02` | `addresses` | String | Один адрес `адрес:порт` (IP или домен); несколько адресов пишутся несколькими записями с этим тегом | да * |
+| `0x03` | `custom_sni` | String | Своё имя для SNI | нет |
+| `0x04` | `has_ipv6` | Bool | Есть ли у клиента IPv6 | нет (по умолчанию `true`) |
+| `0x05` | `username` | String | Логин | да * |
+| `0x06` | `password` | String | Пароль | да * |
+| `0x07` | `skip_verification` | Bool | Не проверять сертификат сервера | нет (по умолчанию `false`) |
+| `0x08` | `certificate` | Bytes | Сертификаты DER подряд; если цепочку проверяют системные корневые сертификаты, поле опускают | нет |
+| `0x09` | `upstream_protocol` | Byte | `0x01` `http2`, `0x02` `http3` | нет (по умолчанию `http2`) |
+| `0x0A` | `anti_dpi` | Bool | Включить меры против DPI | нет (по умолчанию `false`) |
+| `0x0B` | `client_random_prefix` | String | Шестнадцатеричная строка `префикс[/маска]` | нет |
+| `0x0C` | `name` | String | Имя сервера для показа в интерфейсе | нет |
+| `0x0D` | `dns_upstreams` | String[] | Адреса DNS-апстримов, например `1.1.1.1`, `tls://dns.example.com`, `https://dns.example.com/dns-query` | нет |
+| `0x0E` | `subscription_url` | String | Адрес подписки по HTTPS; в нём могут стоять логин и пароль (Basic) | нет |
+| `0x0F` | `client_random_auth_key` | String | Ключ в шестнадцатеричной записи; из него и SNI клиент получает TLS `client_random` | нет |
+| `0x10` | `tls_profile` | Byte | Профиль отпечатка ClientHello, таблица ниже | нет |
 
-## Versioning
+\* Обязательно, если нет тега `subscription_url` (`0x0E`). Когда он есть, статические параметры подключения необязательны и служат запасом для первой попытки, если первая загрузка подписки не удалась.
 
-The deep link format carries an explicit version number in tag `0x00`.
+Профили `tls_profile`:
 
-- If the `0x00` tag is absent, parsers MUST assume **version 0**.
-- The value is encoded as a VarInt.
-- The first explicitly versioned format is **version 1**.
-- A client MUST reject a deep link whose version is higher than the maximum
-  version it supports.
-- A client MUST accept deep links that conform to this specification with a
-  version equal to or lower than the maximum version it supports (backward
-  compatibility).
+| Значение | Профиль |
+| --- | --- |
+| `0x00` | `chrome` |
+| `0x01` | `chrome_canary` |
+| `0x02` | `safari` |
+| `0x03` | `firefox` |
+| `0x04` | `okhttp` |
+| `0x05` | `openssl` |
+| `0x06` | `boringssl` (без имитации) |
 
----
+Числа заданы самим форматом и совпадают с `VpnTlsProfile` в клиенте [TrustTunnelClient](https://github.com/TrustTunnel/TrustTunnelClient/blob/main/common/include/vpn/utils.h). В клиенте CatTunnel перечисление профилей расходится с этими числами (см. раздел B4 в [docs/upstream-divergence.md](docs/upstream-divergence.md)). Сервер CatTunnel `tls_profile` в ссылку не кладёт. Если тега нет, формат предписывает клиенту профиль `chrome`. В справочном скрипте `scripts/config_to_deeplink.py` старое имя `default` принимается как синоним `boringssl`.
 
-## Platform Integration
+## Правила кодирования и разбора
 
-### Mobile (iOS / Android)
+1. Поля могут идти в любом порядке. Кодировщик крейта пишет их так: версия, `hostname`, `username`, `password`, все `addresses`, `client_random_prefix`, `client_random_auth_key`, `tls_profile`, `custom_sni`, `has_ipv6`, `skip_verification`, `anti_dpi`, `certificate`, `upstream_protocol`, `name`, `dns_upstreams`, `subscription_url`.
+2. Тег `0x02` может повторяться, каждая запись добавляет один адрес. Остальные теги пишутся не больше одного раза; при повторе побеждает последняя запись.
+3. Поле со значением по умолчанию кодировщик опускает: `has_ipv6` пишется только при `false`, `skip_verification` и `anti_dpi` только при `true`, `upstream_protocol` только для `http3`. Пустые `client_random_prefix` и `client_random_auth_key` тоже опускаются.
+4. Кодировщик всегда пишет версию `2` первой записью.
+5. Разборщик пропускает неизвестные теги по объявленной длине, поэтому формат расширяется без поломки старых клиентов.
+6. Разборщик отвергает: версию выше 2; запись, длина которой больше остатка данных; значение Bool не из одного байта `0x00` или `0x01`; `upstream_protocol` не из `0x01` и `0x02`; `tls_profile` не из одного байта `0x00`..`0x06`; строку не в UTF-8; `client_random_prefix` и `client_random_auth_key` не в шестнадцатеричной записи (в префиксе проверяются обе части, до и после `/`).
+7. Без `subscription_url` обязательны непустые `hostname`, `username`, `password` и хотя бы один адрес. С `subscription_url` любые другие теги можно опустить: ссылка «только подписка» состоит из тегов `0x00` и `0x0E`, и клиенту нужна успешная загрузка подписки до первого подключения.
+8. `subscription_url` должен начинаться с `https://`; проверка работает и при кодировании, и при разборе.
 
-Register the `tt` scheme in the application manifest. When the OS dispatches a
-deep link:
+```text
+ tt://?<base64url>
+   |
+   +-- нет префикса tt://         -> ошибка схемы
+   v
+ Base64url без заполнителей
+   +-- не декодируется            -> ошибка Base64
+   v
+ цикл по TLV: тег, длина, значение
+   +-- длина больше остатка       -> усечённая запись
+   +-- неизвестный тег            -> пропустить, идти дальше
+   +-- версия выше 2              -> ошибка версии
+   +-- значение неверного вида    -> ошибка поля
+   v
+ итоговая проверка
+   +-- есть subscription_url      -> он должен начинаться с https://
+   '-- нет                        -> hostname, адрес, логин, пароль обязательны
+```
 
-1. Strip the `tt://?` prefix.
-2. Base64url-decode the remainder.
-3. Parse the TLV binary payload.
-4. Populate the endpoint configuration and present it to the user for
-   confirmation before connecting.
+Рисунок 3. Порядок разбора ссылки в крейте.
 
-### Desktop (macOS / Windows / Linux)
+## Как сервер выдаёт ссылку
 
-The `tt://?` URI can be passed as a command-line argument or handled via OS URI
-scheme registration. The TrustTunnel client or setup wizard parses the payload
-using the same decode logic.
+Команда печатает ссылку для пользователя из `credentials.toml`:
 
-### QR Codes
+```shell
+trusttunnel_endpoint vpn.toml hosts.toml -c <имя_пользователя> -a <адрес>
+```
 
-The `tt://?` URI is short enough to be embedded in a QR code for easy scanning,
-enabling zero-typing configuration sharing.
+Формат вывода задаёт `--format`, по умолчанию `deeplink`; `toml` печатает обычный файл настроек клиента. Ключ `--subscription-only` выпускает ссылку из одной подписки: нужна секция `[subscription]` в `vpn.toml`, а если не задан `--subscription-url`, то и сертификат хоста подписки, который проверяется системными корневыми сертификатами. Остальные ключи (`--custom-sni`, `--client-random-prefix`, `--client-random-auth-key`, `--name`, `--dns-upstream`) попадают в соответствующие поля. Полный список ключей: [CONFIGURATION.md](CONFIGURATION.md).
 
----
+После ссылки команда печатает адрес страницы с QR-кодом на сайте проекта TrustTunnel (`https://trusttunnel.org/qr.html#tt=...`). В нём лежит вся ссылка вместе с паролем, так что обращайтесь с ним как с паролем.
 
-## Security Considerations
+В ссылку попадают имя первого основного хоста из `hosts.toml` и фиксированные значения `has_ipv6 = true`, `skip_verification = false`, `upstream_protocol = http2`, `anti_dpi = false`; из-за значений по умолчанию эти поля в ссылке не видны. Сертификат (DER) сервер кладёт, только если системные корневые сертификаты его не проверяют. Тег `tls_profile` сервер в ссылку не добавляет.
 
-- **Credentials in the URI**: The deep link contains the `username` and
-  `password` in cleartext (after decoding). Even the `subscription_url`
-  embeds the user credentials in clear text. Treat deep link URIs with the same
-  care as passwords. Do not log or persist them unnecessarily.
-- **Certificate pinning**: When `certificate` is present and
-  `skip_verification` is `false`, the client MUST verify the endpoint
-  certificate against the provided PEM chain.
-- **User confirmation**: Clients SHOULD display the decoded configuration to the
-  user and require explicit confirmation before establishing a connection.
-- **URI length**: Very large PEM certificate chains may produce long URIs.
-  Implementations should handle URIs up to at least 8 KiB. For QR code use,
-  consider whether the certificate field can be omitted when the endpoint uses a
-  publicly trusted CA.
+## Примеры
+
+Три ссылки ниже получены запуском крейта `trusttunnel-deeplink`.
+
+### Полная ссылка
+
+Настройки: `hostname = vpn.example.com`, адрес `203.0.113.10:443`, логин `alice`, пароль `secret123`.
+
+```text
+ 00 01 02                     версия = 2
+ 01 0F "vpn.example.com"      hostname
+ 05 05 "alice"                username
+ 06 09 "secret123"            password
+ 02 10 "203.0.113.10:443"     address
+```
+
+```uri
+tt://?AAECAQ92cG4uZXhhbXBsZS5jb20FBWFsaWNlBglzZWNyZXQxMjMCEDIwMy4wLjExMy4xMDo0NDM
+```
+
+`has_ipv6`, `skip_verification`, `anti_dpi` и `upstream_protocol` равны умолчаниям и в ссылку не попали.
+
+### Свой SNI и профиль firefox
+
+Те же поля, логин `premium`, пароль `s3cretPass`, плюс `custom_sni = example.org` и `tls_profile = firefox`. Добавились записи `10 01 03` (профиль `0x03`) и `03 0B "example.org"`:
+
+```uri
+tt://?AAECAQ92cG4uZXhhbXBsZS5jb20FB3ByZW1pdW0GCnMzY3JldFBhc3MCEDIwMy4wLjExMy4xMDo0NDMQAQMDC2V4YW1wbGUub3Jn
+```
+
+### Только подписка
+
+Две записи: версия и `subscription_url = https://alice:s3cret@vpn.example.com/subscription` (49 байт, длина `0x31`):
+
+```uri
+tt://?AAECDjFodHRwczovL2FsaWNlOnMzY3JldEB2cG4uZXhhbXBsZS5jb20vc3Vic2NyaXB0aW9u
+```
+
+Обратное преобразование ссылки в файл настроек делает `scripts/deeplink_to_config.py`, прямое делает `scripts/config_to_deeplink.py`.
+
+## Версионирование
+
+Версия лежит в теге `0x00`.
+
+- Если тега нет, разборщик считает версию `0`.
+- Значение кодируется как VarInt.
+- Клиент отвергает ссылку с версией выше той, что он поддерживает.
+- Клиент принимает ссылки с версией, равной поддерживаемой или меньше неё.
+
+## Безопасность
+
+- Логин и пароль лежат в ссылке открытым текстом (после декодирования). В `subscription_url` учётные данные тоже стоят открытым текстом. Обращайтесь со ссылкой как с паролем и не пишите её в журналы без нужды.
+- Если задан `certificate` и `skip_verification` равен `false`, клиент проверяет сертификат сервера по переданной цепочке.
+- Клиенту следует показать пользователю разобранные настройки и дождаться подтверждения до подключения.
+- Длинные цепочки сертификатов дают длинные ссылки. Реализации должны принимать ссылки хотя бы в 8 КиБ. Для QR-кода опустите `certificate`, если сервер использует публично доверенный сертификат.

@@ -35,6 +35,7 @@ CatTunnel server: VPN-сервер, к которому подключаются
 - [Готовые сборки](#готовые-сборки)
 - [Сборка](#сборка)
 - [Установка и запуск](#установка-и-запуск)
+- [Обновление](#обновление)
 - [Настройки](#настройки)
 - [Конфигурация для клиента](#конфигурация-для-клиента)
 - [Docker](#docker)
@@ -99,13 +100,35 @@ cargo build --bins --release
 
 ## Установка и запуск
 
-Скопируйте бинарник и шаблон службы в один каталог, например `/opt/trusttunnel`:
+### Быстрая установка
+
+Скрипт скачивает готовую сборку CatTunnel server из [релизов](https://github.com/Cattunnel/cattunnel-server/releases), сверяет архив с `SHA256SUMS` и ставит бинарник в `/opt/trusttunnel`:
 
 ```shell
-sudo mkdir -p /opt/trusttunnel
-sudo cp target/release/trusttunnel_endpoint /opt/trusttunnel/
-sudo cp scripts/trusttunnel.service.template /opt/trusttunnel/
+curl -fsSL https://raw.githubusercontent.com/Cattunnel/cattunnel-server/refs/heads/main/scripts/install.sh | sh -s -
 ```
+
+После `sh -s -` можно указать параметры:
+
+| Параметр | Действие |
+| --- | --- |
+| `-V 1.5.9.5` | Установить указанную версию вместо последнего релиза |
+| `-o DIR` | Выбрать каталог вместо `/opt/trusttunnel` |
+| `-p archive` | Использовать локальный архив. Если рядом есть `SHA256SUMS`, проверить хеш; иначе показать предупреждение |
+| `-u` | Удалить бинарник, не удаляя настройки и сертификаты |
+| `-a y\|n` | Заранее ответить на вопрос о смене владельца каталога |
+| `-v`, `-h` | Подробный вывод, справка |
+
+```text
+скрипт -> определить ОС и архитектуру -> выбрать последний релиз или -V
+       -> скачать архив и SHA256SUMS -> проверить хеш
+       -> распаковать во временный каталог -> установить бинарник
+       -> оставить существующие настройки и сертификаты на месте
+```
+
+`SHA256SUMS` скачивается из того же релиза и не подписан. Проверка выявляет повреждение при загрузке, но не защищает от подмены самого релиза. Готовые сборки есть для Linux x86_64 и aarch64; сборок для macOS нет. При установке из исходников скопируйте `target/release/trusttunnel_endpoint` и `scripts/trusttunnel.service.template` в выбранный каталог вручную.
+
+### Что дальше
 
 Создайте настройки мастером. Он спросит адрес, пользователей, правила и сертификат (Let's Encrypt, самоподписанный или готовые файлы):
 
@@ -124,13 +147,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 ```
 
-Обновление: скачайте или соберите новую версию, остановите службу, замените бинарник и запустите снова.
+## Обновление
 
-`scripts/install.sh` в апстриме скачивал архивы апстрима. В форке он только печатает сообщение и завершается с ошибкой, чтобы никто случайно не поставил чужие бинарники.
+Запустите ту же команду установки снова. Скрипт заменит бинарник, но оставит существующие `vpn.toml`, `hosts.toml`, `rules.toml`, `credentials.toml` и сертификаты. Работающий сервер продолжит использовать прежний бинарник до перезапуска службы. Перезапускайте её в подходящее время:
+
+```shell
+sudo systemctl restart trusttunnel
+```
 
 ## Настройки
 
-Сервер читает файлы TOML: `vpn.toml` (основные настройки), `hosts.toml` (TLS-хосты), `credentials.toml` (пользователи) и, если нужно, `rules.toml` (правила подключения). Полный справочник: [CONFIGURATION.md](CONFIGURATION.md) (на английском).
+Сервер читает файлы TOML: `vpn.toml` (основные настройки), `hosts.toml` (TLS-хосты), `credentials.toml` (пользователи) и, если нужно, `rules.toml` (правила подключения). Полный справочник: [CONFIGURATION.md](CONFIGURATION.md).
 
 Ключи, которые добавил или использует форк:
 
@@ -157,7 +184,7 @@ cd /opt/trusttunnel
 ./trusttunnel_endpoint vpn.toml hosts.toml -c <client_name> -a <address>
 ```
 
-`<address>`: `ip`, `ip:port`, `domain` или `domain:port`. По умолчанию выводится ссылка `tt://?` ([DEEP_LINK.md](DEEP_LINK.md)), которую приложение CatTunnel берёт из текста или QR-кода. `--format toml` печатает файл TOML для консольного клиента. Другие параметры: `--name`, `--dns-upstream`, `--client-random-auth-key`, `--subscription-url`, `--subscription-only`; см. `./trusttunnel_endpoint -h` и [CONFIGURATION.md](CONFIGURATION.md#command-line-arguments).
+`<address>`: `ip`, `ip:port`, `domain` или `domain:port`. По умолчанию выводится ссылка `tt://?` ([DEEP_LINK.md](DEEP_LINK.md)), которую приложение CatTunnel берёт из текста или QR-кода. `--format toml` печатает файл TOML для консольного клиента. Другие параметры: `--name`, `--dns-upstream`, `--client-random-auth-key`, `--subscription-url`, `--subscription-only`; см. `./trusttunnel_endpoint -h` и [CONFIGURATION.md](CONFIGURATION.md#параметры-командной-строки).
 
 В такой ссылке нет настроек NineLives. Клиенту, который должен ходить через NineLives, в ссылке нужны `xhttp_enable`, путь и открытый ключ сервера: приложение CatTunnel читает их из тегов `tt://` `0x4F`, `0x50` и `0x51` (см. [docs/ninelives.md](docs/ninelives.md#клиент)).
 
@@ -180,14 +207,16 @@ docker compose up -d --build
 | [docs/features.md](docs/features.md) | Что возможностям CatTunnel нужно от сервера, ключи |
 | [docs/ninelives.md](docs/ninelives.md) | NineLives: как устроен, ключи, создание ключа |
 | [docs/xhttp-protocol.md](docs/xhttp-protocol.md) | Формат NineLives на проводе |
-| [docs/cattail.md](docs/cattail.md) | CatTail: спецификация слоя, тестовые векторы (англ.) |
-| [CONFIGURATION.md](CONFIGURATION.md) | Все настройки и параметры командной строки (англ.) |
-| [PROTOCOL.md](PROTOCOL.md) | Базовый протокол туннеля, транспорт `CONNECT` (англ.) |
-| [DEEP_LINK.md](DEEP_LINK.md) | Формат ссылок `tt://` (англ.) |
-| [CERT_RENEWAL.md](CERT_RENEWAL.md) | Продление сертификата через Certbot (англ.) |
-| [METRICS.md](METRICS.md) | Метрики Prometheus (англ.) |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Сборка, кросс-компиляция, Docker, бенчмарки (англ.) |
-| [CHANGELOG.md](CHANGELOG.md) | Изменения форка, затем история апстрима (англ.) |
+| [docs/cattail.md](docs/cattail.md) | CatTail: спецификация слоя, тестовые векторы |
+| [docs/connect.md](docs/connect.md) | Транспорт CONNECT и схемы обмена |
+| [docs/upstream-divergence.md](docs/upstream-divergence.md) | Отличия от TrustTunnel |
+| [CONFIGURATION.md](CONFIGURATION.md) | Все настройки и параметры командной строки |
+| [PROTOCOL.md](PROTOCOL.md) | Базовый протокол туннеля, транспорт `CONNECT` |
+| [DEEP_LINK.md](DEEP_LINK.md) | Формат ссылок `tt://` |
+| [CERT_RENEWAL.md](CERT_RENEWAL.md) | Продление сертификата через Certbot |
+| [METRICS.md](METRICS.md) | Метрики Prometheus |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Сборка, кросс-компиляция, Docker, бенчмарки |
+| [CHANGELOG.md](CHANGELOG.md) | Изменения форка, затем история апстрима |
 
 ## Лицензия
 

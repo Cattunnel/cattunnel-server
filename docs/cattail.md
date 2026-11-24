@@ -1,232 +1,327 @@
-# CatTail wire protocol, version 1
+# Протокол CatTail, версия 1
 
-CatTail is an optional outer layer for the CatTunnel endpoint. The client wraps
-the bytes of its ordinary TLS connection (the same TLS 1.3 + HTTP/2 CONNECT
-session that it would send to port 443) into authenticated, padded frames, so
-that from the first byte on the wire the TCP stream carries no TLS record
-headers, no SNI and no fixed prefix. The endpoint removes the CatTail layer
-and hands the inner bytes to the same TLS acceptor that serves its main TCP
-listener. Everything inside (authentication, the CONNECT pool, rotation,
-keepalive) is unchanged.
+Схемы в этом документе справочные, нормативен текст. Английский перевод:
+[cattail.en.md](cattail.en.md); при расхождении верен русский текст.
 
-This document is normative for both implementations: the endpoint
-(Rust, `lib/src/cattail.rs`) and the client core (C++). Test vectors are in
-[`cattail-vectors.json`](cattail-vectors.json); they are produced by an
-independent Python implementation, `scripts/cattail_vectors.py`, and checked
-by `cargo test`.
-
-Attribution. CatTail takes ideas, not code or text, from three designs:
-the Identity + Counter replay window and the silent admission come from the
-Nowhere-Protocol specification by NodePassProject
-(https://github.com/NodePassProject/Nowhere, specification licensed
-CC BY 4.0; the wire format here is new); AEAD frames with random padding
-around them and the timestamp window come from mieru
-(https://github.com/enfein/mieru); the padding scheme string comes from
-AnyTLS (https://github.com/anytls/anytls-go). The implementations of Nowhere
-and mieru are GPL-3.0; no code from them, or from AnyTLS, is used.
-
-The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
-All integers are unsigned and big-endian.
+CatTail является необязательным внешним слоем endpoint'а CatTunnel. Клиент
+оборачивает байты своего обычного TLS-соединения (той же сессии TLS 1.3 + HTTP/2
+CONNECT, которую он отправил бы на порт 443) в аутентифицированные кадры с
+добивкой, так что с первого байта в TCP-потоке нет ни заголовков TLS-записей, ни SNI,
+ни фиксированного префикса. Endpoint снимает слой CatTail и передаёт внутренние байты
+тому же приёмнику TLS, который обслуживает его основной TCP-листенер. Всё внутри
+(аутентификация, пул CONNECT, ротация, keepalive) не меняется.
 
 ```text
- client                                   endpoint (CatTail listener)
-   TLS 1.3 + HTTP/2 bytes                   |
-        |                                   |
-   N_c | OPEN frame | DATA | DATA ... --->  admission: key, time window,
-        (AEAD + random padding,             identity + counter (replay)
-         no TLS headers, no SNI)            |  fail: stay silent
-                                            v
-   <--- N_s | DATA | DATA ...          strip frames -> inner bytes
-                                            |
-                                            v
-                                     same TLS acceptor as :443
+ CLIENT                                                       ENDPOINT
+ app bytes                                                    destination
+    |                                                              ^
+ +--v-----------+                                         +-------+------+
+ | HTTP/2       |  CONNECT, pool, rotation, keepalive     | HTTP/2       |
+ +--v-----------+                                         +-------^------+
+ +--v-----------+                                         +-------+------+
+ | TLS          |  the same TLS as on port 443            | TLS acceptor |
+ +--v-----------+                                         +-------^------+
+ +--v-----------+  N_c | frames             TCP           +-------+------+
+ | CatTail      |=======================================>| CatTail      |
+ | AEAD frames  |<=======================================| admission,   |
+ | and padding  |  N_s | frames                          | silence      |
+ +--------------+                                         +--------------+
 ```
 
-## 1. Primitives
+Рисунок 1. Место CatTail. Новым является только внешний слой; TLS-сессия внутри та
+же, которую клиент отправил бы на порт 443.
 
-| Name | Definition |
+Документ нормативен для обеих реализаций: endpoint (Rust, `lib/src/cattail.rs`) и
+ядро клиента (C++). Тестовые векторы лежат в
+[`cattail-vectors.json`](cattail-vectors.json); их создаёт независимая реализация на
+Python, `scripts/cattail_vectors.py`, а проверяет `cargo test`.
+
+Происхождение идей. CatTail берёт идеи, но не код и не текст, из трёх разработок:
+окно повторов Identity + Counter и тихий отказ в допуске взяты из спецификации
+Nowhere-Protocol от NodePassProject (https://github.com/NodePassProject/Nowhere,
+спецификация под лицензией CC BY 4.0; формат кадров здесь новый); AEAD-кадры со
+случайной добивкой вокруг них и окно по времени взяты из mieru
+(https://github.com/enfein/mieru); строка схемы добивки взята из AnyTLS
+(https://github.com/anytls/anytls-go). Реализации Nowhere и mieru распространяются
+под GPL-3.0; код из них и из AnyTLS не используется.
+
+Слова MUST, MUST NOT, SHOULD и MAY (в тексте ниже: ДОЛЖЕН, НЕ ДОЛЖЕН, СЛЕДУЕТ,
+ВПРАВЕ) употребляются как в RFC 2119. Все целые числа беззнаковые, в порядке big-endian.
+
+## 1. Примитивы
+
+| Имя | Определение |
 |---|---|
-| `K` | the endpoint key, 32 bytes, shared by the endpoint and its clients (configuration `[cattail] key`, subscription tag 0x58), base64 (standard alphabet, with padding) in text form |
-| AEAD | AES-128-GCM (RFC 5116), 16-byte key, 12-byte nonce, 16-byte tag, empty associated data. The same primitive and nonce layout as NineLives suite 1 (`lib/src/xhttp_crypto.rs`) |
+| `K` | ключ endpoint'а, 32 байта, общий для endpoint'а и его клиентов (настройка `[cattail] key`, тег подписки 0x58), в текстовом виде base64 (стандартный алфавит, с дополнением) |
+| AEAD | AES-128-GCM (RFC 5116), ключ 16 байт, nonce 12 байт, тег 16 байт, пустые связанные данные. Тот же примитив и та же раскладка nonce, что у набора 1 NineLives (`lib/src/xhttp_crypto.rs`) |
 | HKDF | HKDF-SHA256 (RFC 5869) |
-| `N_c` | the client nonce, 24 bytes |
-| `N_s` | the server nonce, 24 bytes |
+| `N_c` | nonce клиента, 24 байта |
+| `N_s` | nonce сервера, 24 байта |
 
-### 1.1 Direction keys
+### 1.1 Ключи направлений
 
     key_c2s = HKDF-Expand(HKDF-Extract(salt = N_c,       IKM = K), info = "cattail-v1 c2s", L = 16)
     key_s2c = HKDF-Expand(HKDF-Extract(salt = N_c || N_s, IKM = K), info = "cattail-v1 s2c", L = 16)
 
-The info strings are ASCII without a terminating zero. `N_s` makes the
-keys of the server direction fresh even if a client segment were accepted
-twice (for example after a restart of the endpoint).
+Строки info записываются в ASCII без завершающего нуля. `N_s` делает ключи
+направления сервера свежими, даже если сегмент клиента был бы принят дважды
+(например, после перезапуска endpoint'а).
 
-### 1.2 AEAD nonces
+```text
+ K (32 bytes, endpoint key)
+   |
+   +-- HKDF-Extract(salt = N_c)          --> HKDF-Expand("cattail-v1 c2s", 16)
+   |                                           = key_c2s   (client to server)
+   +-- HKDF-Extract(salt = N_c || N_s)   --> HKDF-Expand("cattail-v1 s2c", 16)
+                                               = key_s2c   (server to client)
 
-Each direction keeps a 64-bit seal counter `n`, starting at 0. Every AEAD
-operation of that direction (a header or a body, see 2.2) uses the nonce
+ AEAD nonce (12 bytes) = direction (1) | 00 00 00 | n (8, big-endian)
+ direction: 01 client to server, 02 server to client; n counts every
+ header seal and every body seal of that direction from 0.
+```
 
-    nonce = direction (1 byte) || 00 00 00 || n (8 bytes)
+Рисунок 2. Ключи направлений и nonce.
 
-with `direction = 0x01` for client to server and `0x02` for server to
-client, and then increments `n`. A side MUST close the connection instead of
-reusing a counter value.
+### 1.2 Nonce AEAD
 
-## 2. Framing
+Каждое направление ведёт 64-битный счётчик запечатываний `n`, начиная с 0. Каждая
+операция AEAD этого направления (заголовок или тело, см. 2.2) использует nonce
 
-### 2.1 Stream layout
+    nonce = direction (1 байт) || 00 00 00 || n (8 байт)
 
-Client to server:
+где `direction = 0x01` для клиента к серверу и `0x02` для сервера к клиенту, после
+чего `n` увеличивается. Сторона ДОЛЖНА закрыть соединение, а не использовать
+значение счётчика повторно.
+
+## 2. Кадрирование
+
+### 2.1 Раскладка потока
+
+Клиент к серверу:
 
     N_c (24) | frame | frame | ...
 
-Server to client, only after a successful admission (section 3):
+Сервер к клиенту, только после успешного допуска (раздел 3):
 
     N_s (24) | frame | frame | ...
 
-The server sends `N_s` immediately before its first frame, in the same
-write. The first frame of the client direction has the type OPEN, every other
-frame (in both directions) has the type DATA.
-
-### 2.2 Frame
+Сервер отправляет `N_s` непосредственно перед первым своим кадром, в той же записи.
+Первый кадр направления клиента имеет тип OPEN, все остальные кадры (в обоих
+направлениях) имеют тип DATA.
 
 ```text
- +-----------+-------------+-------------------+-------------+
- | E(header) | mid padding | E(body)           | end padding |
- | 48 B      | mid_len B   | body_len + 16 B   | end_len B   |
- +-----------+-------------+-------------------+-------------+
-   AEAD        not authed    AEAD, next counter  not authed
+ client to server:  N_c (24) | OPEN frame | DATA frame | DATA frame | ...
+ server to client:  N_s (24) | DATA frame | DATA frame | ...
+                    (only after a successful admission; N_s and the first
+                     frame are sent in the same write)
 ```
+
+Рисунок 3. Раскладка потока в обоих направлениях.
+
+### 2.2 Кадр
 
     E(header) (48) | mid padding (mid_len) | E(body) (body_len + 16) | end padding (end_len)
 
-* `E(header)` is the 32-byte header (2.3) sealed with the AEAD: 32 bytes of
-  ciphertext and 16 bytes of tag.
-* `E(body)` is the body sealed with the AEAD, with the next counter value
-  after the header. When `body_len = 0` the body is absent: no ciphertext, no
-  tag, and the counter is not incremented. Such a frame carries only padding.
-* The padding bytes are not authenticated and carry no meaning. The receiver
-  MUST skip them without looking at them. The sender chooses their content
-  (random bytes by default).
+* `E(header)` это 32-байтовый заголовок (2.3), запечатанный AEAD: 32 байта
+  шифртекста и 16 байт тега.
+* `E(body)` это тело, запечатанное AEAD со следующим значением счётчика после
+  заголовка. При `body_len = 0` тела нет: ни шифртекста, ни тега, и счётчик не
+  увеличивается. Такой кадр несёт только добивку.
+* Байты добивки не аутентифицируются и смысла не несут. Получатель ДОЛЖЕН
+  пропускать их, не разбирая. Содержимое выбирает отправитель (по умолчанию
+  случайные байты).
 
-### 2.3 Header (32 bytes, plaintext)
+```text
+ +-------------------+----------------+----------------------+--------------+
+ | E(header)         | mid padding    | E(body)              | end padding  |
+ | 32 B ciphertext   | mid_len bytes  | body_len B ciphertext| end_len bytes|
+ | + 16 B tag = 48 B | not sealed,    | + 16 B tag           | not sealed,  |
+ |                   | skipped by the | (absent when         | skipped by   |
+ |                   | receiver       | body_len = 0)        | the receiver |
+ +-------------------+----------------+----------------------+--------------+
+  seal counter n      (no counter)     seal counter n + 1     (no counter)
+```
 
-| Offset | Length | Field | OPEN | DATA |
+Рисунок 4. Один кадр на проводе. По умолчанию добивка случайная.
+
+### 2.3 Заголовок (32 байта, открытый текст)
+
+| Смещение | Длина | Поле | OPEN | DATA |
 |---|---|---|---|---|
 | 0 | 1 | type | 0x01 | 0x02 |
 | 1 | 1 | version | 0x01 | 0x01 |
-| 2 | 8 | timestamp: Unix time of the client, seconds | set | 0 |
-| 10 | 8 | identity | set | 0 |
-| 18 | 6 | counter (48 bits) | set | 0 |
+| 2 | 8 | timestamp: время Unix клиента, секунды | задано | 0 |
+| 10 | 8 | identity | задано | 0 |
+| 18 | 6 | counter (48 бит) | задано | 0 |
 | 24 | 2 | body_len, 0..16384 | | |
 | 26 | 2 | mid_len, 0..65535 | | |
 | 28 | 2 | end_len, 0..65535 | | |
-| 30 | 2 | reserved, sent as 0, ignored | | |
+| 30 | 2 | reserved, отправляется 0, игнорируется | | |
 
-Receivers MUST treat as an error: a type other than OPEN for the first client
-frame, a type other than DATA for any other frame, a version other than 1, a
-`body_len` above 16384. Fields marked 0 are sent as zero and ignored.
+Получатели ДОЛЖНЫ считать ошибкой: тип, отличный от OPEN, у первого кадра клиента;
+тип, отличный от DATA, у любого другого кадра; версию, отличную от 1; `body_len`
+больше 16384. Поля, помеченные 0, отправляются нулями и игнорируются.
 
-The body bytes, concatenated in frame order, are the inner byte stream (the
-TLS connection). Frame boundaries carry no meaning for the inner stream.
+Байты тела, склеенные в порядке кадров, образуют внутренний поток байт (TLS-соединение).
+Границы кадров для внутреннего потока смысла не имеют.
 
-### 2.4 End of stream
+```text
+ offset  len  field      OPEN (first client frame)       DATA (all others)
+ ------  ---  ---------  ------------------------------  -----------------
+      0    1  type       01                              02
+      1    1  version    01                              01
+      2    8  timestamp  Unix seconds of the client       0
+     10    8  identity   random per client start         0
+     18    6  counter    per identity, +1 per TCP        0
+                         connection
+     24    2  body_len   0..16384
+     26    2  mid_len    0..65535
+     28    2  end_len    0..65535
+     30    2  reserved   sent as 0, ignored
+ total 32 bytes, big-endian; sealed to 48 bytes (32 + 16 tag)
+```
 
-A TCP FIN received at a frame boundary ends the inner stream of that
-direction (half-close). A FIN inside a frame is an error. The inner TLS has
-its own close_notify, so CatTail does not authenticate the end of stream.
+Рисунок 5. Заголовок в 32 байта по смещениям.
 
-### 2.5 Identity and counter
+### 2.4 Конец потока
 
-`identity` is 8 random bytes that the client draws again at every start of
-its process (or every new configuration). `counter` starts at 0 for a new
-identity and grows by 1 for every new TCP connection the client opens with
-this identity. A client that cannot keep the counter MUST draw a new identity.
+TCP FIN, полученный на границе кадра, завершает внутренний поток этого направления
+(half-close). FIN внутри кадра является ошибкой. У внутреннего TLS есть собственный
+close_notify, поэтому CatTail конец потока не аутентифицирует.
 
-## 3. Admission (server)
+### 2.5 Identity и counter
 
-The server reads `N_c` and the first 48 bytes of `E(header)`, derives
-`key_c2s`, and checks, in this order:
+`identity` это 8 случайных байт, которые клиент выбирает заново при каждом запуске
+процесса (или при каждой новой конфигурации). `counter` начинается с 0 для новой
+identity и растёт на 1 с каждым новым TCP-соединением, которое клиент открывает с этой
+identity. Клиент, который не может сохранить счётчик, ДОЛЖЕН выбрать новую identity.
 
-1. the client address is not in `decoy_only_ips_file` (the decoy trap);
-2. the endpoint has memory left in its buffer budget (the same budget as
-   NineLives, `xhttp_memory_limit`);
-3. the header opens with `key_c2s` and seal counter 0;
-4. type is OPEN, version is 1, `body_len <= 16384`;
-5. `|now - timestamp| <= 120` seconds, and `timestamp >= T_start`, the
-   Unix time the CatTail listener started (an OPEN recorded before a restart
-   cannot be replayed after it, when the replay window is empty);
-6. the replay window (3.1) accepts `(identity, counter)`; only now the pair
-   is recorded.
+## 3. Допуск (сервер)
 
-If all checks pass, the connection is admitted: the server reads the rest of
-the frame and passes the body bytes to the TLS acceptor of its main TCP
-listener, as if they had arrived on that listener from the same client
-address.
+Сервер читает `N_c` и первые 48 байт `E(header)`, выводит `key_c2s` и проверяет по
+порядку:
 
-### 3.1 Replay window
+1. адрес клиента не входит в `decoy_only_ips_file` (ловушка для зондов);
+2. у endpoint'а остался запас в бюджете буферов (тот же бюджет, что у NineLives,
+   `xhttp_memory_limit`);
+3. заголовок открывается ключом `key_c2s` со счётчиком запечатывания 0;
+4. тип OPEN, версия 1, `body_len <= 16384`;
+5. `|now - timestamp| <= 120` секунд и `timestamp >= T_start`, где `T_start` время
+   Unix запуска листенера CatTail (OPEN, записанный до перезапуска, нельзя повторить
+   после него, когда окно повторов пусто);
+6. окно повторов (3.1) принимает `(identity, counter)`; только теперь пара
+   записывается.
 
-Per identity the server keeps `top`, the highest accepted counter, and a
-1024-bit map of the counters `top - 0 ... top - 1023` that were accepted.
-A counter `c` is accepted when:
+Если все проверки пройдены, соединение допущено: сервер читает остаток кадра и
+передаёт байты тела приёмнику TLS своего основного TCP-листенера, как будто они
+пришли на этот листенер с того же адреса клиента.
 
-* the identity is new: `top = c`, the map holds only `c`;
-* `c > top`: the map is shifted by `c - top`, `top = c`;
-* `top - c < 1024` and `c` is not in the map: `c` is added.
+```text
+ TCP accept on the CatTail port; deadline D = accept time + random 10..60 s
+   |
+   v
+ client address in decoy_only_ips_file? ------ yes ---+
+   | no                                               |
+ buffer budget (xhttp_memory_limit) left? ----- no ---+
+   | yes                                              |
+ 72 bytes (N_c + E(header)) read before D? ---- no ---+
+   | yes                                              |
+ header opens with key_c2s at counter 0,              |
+ type OPEN, version 1, body_len <= 16384? ----- no ---+
+   | yes                                              |
+ |now - timestamp| <= 120 s and                       |
+ timestamp >= T_start? ------------------------ no ---+
+   | yes                                              |
+ replay window accepts (identity, counter)? --- no ---+
+   | yes                                              v
+   v                                               SILENCE
+ ADMIT: read the rest of the frame, pass the       (section 3.2)
+ body bytes to the TLS acceptor
+```
 
-Otherwise (`c` is in the map, or `top - c >= 1024`) it is a replay. The
-registry holds at most 16384 identities; adding one more removes the identity
-that was added first (FIFO).
+Рисунок 6. Проверки допуска по порядку. Любой отказ ведёт к одному и тому же молчанию.
 
-### 3.2 Silence
+### 3.1 Окно повторов
 
-When any admission check fails, or the first 72 bytes do not arrive in time,
-the server:
+Для каждой identity сервер хранит `top`, наибольший принятый счётчик, и 1024-битную
+карту принятых счётчиков `top - 0 ... top - 1023`. Счётчик `c` принимается, когда:
 
-* never writes a byte to the connection;
-* keeps reading and discarding whatever arrives;
-* at a deadline drawn uniformly from 10 to 60 seconds after the TCP accept,
-  sends FIN (shutdown of the write side), discards input for up to 5 more
-  seconds or until the peer's FIN, then closes the socket.
+* identity новая: `top = c`, карта содержит только `c`;
+* `c > top`: карта сдвигается на `c - top`, `top = c`;
+* `top - c < 1024` и `c` нет в карте: `c` добавляется.
 
-The behaviour is the same for every failed check, so a prober learns nothing
-from timing or from the way the connection ends.
+Иначе (`c` есть в карте или `top - c >= 1024`) это повтор. В реестре не больше 16384
+identity; добавление ещё одной удаляет ту, что была добавлена первой (FIFO).
 
-### 3.3 Errors after admission
+```text
+ counters:  top-1023 ................................ top-1   top
+ map:       1024 bits, a set bit = counter accepted
 
-After admission, a frame that fails to open, a bad type or version, a
-`body_len` above 16384 or a FIN inside a frame closes the connection at once
-(both directions).
+ new identity:           top = c, map holds only c
+ c > top:                shift the map by (c - top), top = c, set bit c
+ top-1023 <= c < top
+   and bit c clear:      set bit c (accepted)
+ bit c set, or c < top-1023:  REPLAY, rejected
+ registry: at most 16384 identities, the oldest added is removed first
+```
 
-## 4. Padding scheme
+Рисунок 7. Окно повторов одной identity.
 
-The sender shapes its first writes with a scheme string, the idea of the
-AnyTLS padding scheme. The receiver does not need the sender's scheme: any
-sequence of valid frames is accepted. The server uses the scheme from
-`[cattail] pattern`, the client the one from subscription tag 0x59.
+### 3.2 Молчание
 
-### 4.1 Syntax
+Когда любая проверка допуска не пройдена или первые 72 байта не пришли вовремя, сервер:
 
-Lines separated by `\n` (a `;` is accepted as a separator too, and `\r` is
-ignored). Each line is `key=value`. Spaces around keys and values are
-ignored. Empty lines are ignored.
+* никогда не пишет в соединение ни одного байта;
+* продолжает читать и отбрасывать всё, что приходит;
+* в момент, выбранный равномерно от 10 до 60 секунд после TCP accept, отправляет FIN
+  (закрывает сторону записи), отбрасывает вход до 5 секунд сверх этого или до FIN
+  собеседника, затем закрывает сокет.
 
-| Key | Value | Meaning | Default |
+Поведение одинаково для любой неудачной проверки, поэтому зонд ничего не узнаёт ни по
+времени, ни по тому, как закончилось соединение.
+
+```text
+ t = 0 (accept)            t = D (10..60 s)         t = D + 5 s at most
+   |---- read and discard ------|-- FIN, discard ------|-- close the socket
+   |  the endpoint never writes a byte to the peer, whatever the failed check
+```
+
+Рисунок 8. Хронология молчания. Момент D выбирается один раз на соединение.
+
+### 3.3 Ошибки после допуска
+
+После допуска кадр, который не открывается, неверный тип или версия, `body_len` выше
+16384 или FIN внутри кадра немедленно закрывают соединение (оба направления).
+
+## 4. Схема добивки
+
+Отправитель формирует свои первые записи по строке схемы, идея взята из схемы добивки
+AnyTLS. Получателю схема отправителя не нужна: принимается любая последовательность
+корректных кадров. Сервер использует схему из `[cattail] pattern`, клиент схему из
+тега подписки 0x59.
+
+### 4.1 Синтаксис
+
+Строки разделяются `\n` (`;` тоже принимается как разделитель, `\r` игнорируется).
+Каждая строка имеет вид `key=value`. Пробелы вокруг ключей и значений игнорируются.
+Пустые строки игнорируются.
+
+| Ключ | Значение | Смысл | По умолчанию |
 |---|---|---|---|
-| `stop` | 0..16 | number of shaped writes | 0 |
-| `0` .. `15` | items, comma separated | how write `i` is cut, `i < stop` | none (write sent as steady frames) |
-| `mid` | `lo-hi` | mid padding of steady frames, 0..4096 | `0-0` |
-| `end` | `lo-hi` | end padding of steady frames, 0..4096 | `0-0` |
-| `nonce` | `lo-hi` | printable prefix of the sender's own nonce, 0..24 bytes | `0-0` |
+| `stop` | 0..16 | число оформляемых записей | 0 |
+| `0` .. `15` | элементы через запятую | как режется запись `i`, `i < stop` | нет (запись уходит ровными кадрами) |
+| `mid` | `lo-hi` | средняя добивка ровных кадров, 0..4096 | `0-0` |
+| `end` | `lo-hi` | конечная добивка ровных кадров, 0..4096 | `0-0` |
+| `nonce` | `lo-hi` | печатаемый префикс собственного nonce отправителя, 0..24 байта | `0-0` |
 
-An item is either `lo-hi` or a single number `n` (meaning `n-n`): the
-total wire size of one frame, 48..16448 (16448 = 48 + 16384 + 16), or `c`.
-At most 16 items per line. Values must satisfy `lo <= hi`. Unknown keys are
-ignored (newer schemes may add keys). Any malformed known key makes the whole
-string invalid: the endpoint refuses to start, the client uses its built-in
-default.
+Элемент это либо `lo-hi`, либо одно число `n` (то есть `n-n`): полный размер одного
+кадра на проводе, 48..16448 (16448 = 48 + 16384 + 16), либо `c`. В строке не больше 16
+элементов. Значения должны удовлетворять `lo <= hi`. Неизвестные ключи игнорируются
+(более новые схемы могут добавлять ключи). Любой неверный известный ключ делает всю
+строку недопустимой: endpoint отказывается стартовать, клиент использует встроенную
+схему по умолчанию.
 
-The endpoint's default scheme (used when `pattern` is not set):
+Схема endpoint'а по умолчанию (когда `pattern` не задан):
 
     stop=3
     0=400-1400,c,200-900
@@ -235,37 +330,51 @@ The endpoint's default scheme (used when `pattern` is not set):
     mid=0-32
     end=0-96
 
-### 4.2 Sender algorithm
+### 4.2 Алгоритм отправителя
 
-Writes are counted per direction from 0: a write is one chunk of inner bytes
-handed to the CatTail layer (for the server: one read from the TLS side). For
-write `i < stop` with a line `i`, the data `D` is cut by the items in order:
+Записи считаются по направлениям с 0: запись это один кусок внутренних байт, отданный
+слою CatTail (для сервера: одно чтение со стороны TLS). Для записи `i < stop` со строкой
+`i` данные `D` режутся элементами по порядку:
 
-* `c`: if `D` is empty, stop processing the items of this write;
-* a size item: draw `L` uniformly in `lo..hi`. If `D` is not empty and
-  `L >= 65`, the frame carries `b = min(|D|, L - 64, 16384)` bytes of `D`
-  and `L - 64 - b` bytes of padding. Otherwise the frame carries padding
-  only, `L - 48` bytes. The padding is split at a uniform point into
-  `mid_len` and `end_len`.
+* `c`: если `D` пусто, обработка элементов этой записи прекращается;
+* элемент размера: выбрать `L` равномерно из `lo..hi`. Если `D` не пусто и `L >= 65`,
+  кадр несёт `b = min(|D|, L - 64, 16384)` байт `D` и `L - 64 - b` байт добивки. Иначе
+  кадр несёт только добивку, `L - 48` байт. Добивка делится в равномерно выбранной
+  точке на `mid_len` и `end_len`.
 
-Bytes of `D` left after the items, and every write with `i >= stop` or
-without a line, are sent as steady frames: bodies of up to 16384 bytes,
-`mid_len` and `end_len` drawn from `mid` and `end`.
+Байты `D`, оставшиеся после элементов, и каждая запись с `i >= stop` или без строки
+отправляются ровными кадрами: тела до 16384 байт, `mid_len` и `end_len` выбираются из
+`mid` и `end`.
 
-The client's OPEN frame is the first frame it sends, whatever its body (it may
-carry padding only). The client SHOULD send `N_c` and all frames of write 0
-in one write to the socket.
+Кадр OPEN клиента это первый кадр, который он отправляет, каким бы ни было его тело (он
+может нести только добивку). Клиенту СЛЕДУЕТ отправлять `N_c` и все кадры записи 0 одной
+записью в сокет.
 
-The nonce policy `nonce=lo-hi` replaces the first `P` bytes of the
-sender's own nonce, `P` uniform in `lo..hi`, with bytes drawn uniformly from
-the printable ASCII range 0x21..0x7E. The rest stays random.
+Политика nonce `nonce=lo-hi` заменяет первые `P` байт собственного nonce отправителя,
+`P` равномерно из `lo..hi`, байтами, выбранными равномерно из печатаемого ASCII
+0x21..0x7E. Остальное остаётся случайным.
 
-## 5. Configuration of the endpoint
+```text
+ default scheme, write 0 carrying data D:   0=400-1400,c,200-900
+
+   item 400-1400 : L = random 400..1400. Frame carries
+                   b = min(|D|, L - 64, 16384) bytes of D and L - 64 - b
+                   bytes of padding (split at a random point into mid/end)
+   item c        : if D is now empty, stop; else go on
+   item 200-900  : next frame in the same way
+   rest of D     : steady frames, body <= 16384,
+                   mid_len in 0-32, end_len in 0-96
+ writes 3 and later (stop=3): steady frames only
+```
+
+Рисунок 9. Как схема добивки по умолчанию режет первую запись.
+
+## 5. Настройка endpoint'а
 
     [cattail]
     listen_address = "0.0.0.0:20443"
-    key = "<base64 of 32 random bytes>"
-    # optional, see section 4
+    key = "<base64 от 32 случайных байт>"
+    # необязательно, см. раздел 4
     pattern = """
     stop=3
     0=400-1400,c,200-900
@@ -275,24 +384,35 @@ the printable ASCII range 0x21..0x7E. The rest stays random.
     end=0-96
     """
 
-The endpoint listens on one TCP port. A range of ports is mapped to it by a
-DNAT or redirect rule of the host firewall, outside the endpoint (the same
-way as the 8443/995 redirect of the `alt_port` role); the client picks a
-random port of the range for each new TCP connection.
+Endpoint слушает один TCP-порт. Диапазон портов отображается на него правилом DNAT или
+redirect файрвола хоста вне endpoint'а (так же, как перенаправление 8443/995 роли
+`alt_port`); клиент выбирает случайный порт диапазона для каждого нового TCP-соединения.
 
-## 6. Security notes
+```text
+ clients ---- TCP to a random port P of the range [a..b] ----+
+ (new port for every new TCP connection)                     |
+                                                             v
+                                         host firewall: DNAT / redirect
+                                                             |
+                                                             v
+                              endpoint  [cattail] listen_address (one port)
+ main TCP listener (port 443)  ------------------ unchanged, separate port
+```
 
-* `K` authenticates the CatTail layer only. Users are authenticated inside,
-  by the CONNECT credentials, as without CatTail. Anyone holding `K` (every
-  subscriber of the endpoint) can open the outer layer and reach the inner TLS;
-  this is the same exposure as port 443.
-* An OPEN recorded on the wire can be replayed to another endpoint that uses
-  the same `K` within the timestamp window. Each endpoint SHOULD have its own
-  key.
-* The registry of 16384 identities bounds memory. An identity evicted from it
-  could be replayed within 120 s; that needs more than 16384 distinct client
-  starts in two minutes.
-* CatTail hides the TLS record lengths of the first writes only as far as the
-  padding scheme reaches. Steady frames show the sizes of the inner writes,
-  plus 64 bytes and the steady padding.
-* Low-entropy shaping of the ciphertext (as in mieru) is not part of version 1.
+Рисунок 10. Диапазон портов, отображённый на один листенер вне endpoint'а.
+
+## 6. Замечания по безопасности
+
+* `K` аутентифицирует только слой CatTail. Пользователи аутентифицируются внутри,
+  учётными данными CONNECT, как и без CatTail. Любой обладатель `K` (каждый
+  подписчик endpoint'а) может открыть внешний слой и дойти до внутреннего TLS; это та
+  же экспозиция, что у порта 443.
+* OPEN, записанный на проводе, можно воспроизвести на другом endpoint'е с тем же `K` в
+  пределах окна времени. У каждого endpoint'а СЛЕДУЕТ быть своему ключу.
+* Реестр из 16384 identity ограничивает память. Вытесненную из него identity можно
+  воспроизвести в течение 120 с; для этого нужно более 16384 разных запусков клиента за
+  две минуты.
+* CatTail скрывает длины TLS-записей первых записей лишь настолько, насколько
+  достаёт схема добивки. Ровные кадры показывают размеры внутренних записей плюс 64
+  байта и ровную добивку.
+* Низкоэнтропийное оформление шифртекста (как в mieru) в версию 1 не входит.
