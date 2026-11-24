@@ -538,7 +538,9 @@ pub(crate) struct XhttpRegistry {
     available: tokio::sync::Notify,
 }
 
-struct MemoryReservation {
+/// A share of the memory budget of the endpoint, returned on drop. CatTail
+/// takes its connection buffers from the same budget.
+pub(crate) struct MemoryReservation {
     registry: Arc<XhttpRegistry>,
     bytes: usize,
     limit: usize,
@@ -635,7 +637,7 @@ impl XhttpRegistry {
         }
     }
 
-    fn reserve(
+    pub(crate) fn reserve(
         self: &Arc<Self>,
         bytes: usize,
         limit: usize,

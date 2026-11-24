@@ -170,6 +170,15 @@ async fn do_connect_request(
     endpoint_address: &SocketAddr,
     proxy_auth: Option<String>,
 ) -> http::StatusCode {
+    do_connect_response(endpoint_address, proxy_auth)
+        .await
+        .status()
+}
+
+async fn do_connect_response(
+    endpoint_address: &SocketAddr,
+    proxy_auth: Option<String>,
+) -> hyper::Response<hyper::Body> {
     let stream =
         common::establish_tls_connection(common::MAIN_DOMAIN_NAME, endpoint_address, None).await;
 
@@ -194,7 +203,7 @@ async fn do_connect_request(
         let rr = rr.body(hyper::Body::empty()).unwrap();
         let response = request.send_request(rr).await.unwrap();
         info!("CONNECT response: {:?}", response);
-        response.status()
+        response
     };
 
     futures::pin_mut!(conn_driver);
@@ -426,7 +435,73 @@ async fn decoy_only_address_fails_with_valid_credentials() {
     };
 
     tokio::select! {
-        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap()) => unreachable!(),
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap(), 407) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn decoy_only_valid_and_invalid_credentials_have_empty_405_responses() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("decoy-only.txt");
+    std::fs::write(&list, "127.0.0.1\n").unwrap();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        for auth in [Some("a:b".into()), Some("a:wrong".into())] {
+            let response = do_connect_response(&endpoint_address, auth).await;
+            assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(http::header::CONTENT_LENGTH)
+                    .unwrap(),
+                "0"
+            );
+            assert!(hyper::body::to_bytes(response.into_body())
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    };
+
+    tokio::select! {
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap(), 405) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn wrong_password_has_empty_405_response_without_decoy_only() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("decoy-only.txt");
+    std::fs::write(&list, "203.0.113.7\n").unwrap();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let response = do_connect_response(&endpoint_address, Some("a:wrong".into())).await;
+        assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::CONTENT_LENGTH)
+                .unwrap(),
+            "0"
+        );
+        assert!(hyper::body::to_bytes(response.into_body())
+            .await
+            .unwrap()
+            .is_empty());
+    };
+
+    tokio::select! {
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap(), 405) => unreachable!(),
         _ = client_task => (),
         _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
     }
@@ -448,13 +523,17 @@ async fn decoy_only_list_does_not_touch_other_addresses() {
     };
 
     tokio::select! {
-        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap()) => unreachable!(),
+        _ = run_endpoint_with_decoy_list(&endpoint_address, list.to_str().unwrap(), 407) => unreachable!(),
         _ = client_task => (),
         _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
     }
 }
 
-async fn run_endpoint_with_decoy_list(listen_address: &SocketAddr, decoy_list: &str) {
+async fn run_endpoint_with_decoy_list(
+    listen_address: &SocketAddr,
+    decoy_list: &str,
+    auth_code: u16,
+) {
     let settings = Settings::builder()
         .listen_address(listen_address)
         .unwrap()
@@ -470,6 +549,7 @@ async fn run_endpoint_with_decoy_list(listen_address: &SocketAddr, decoy_list: &
             max_http3_conns: None,
         }])
         .decoy_only_ips_file(decoy_list)
+        .auth_failure_status_code(auth_code)
         .build()
         .unwrap();
 

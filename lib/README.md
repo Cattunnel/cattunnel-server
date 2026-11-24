@@ -1,12 +1,10 @@
-# Endpoint library (`trusttunnel` crate)
-
-The core library of CatTunnel server. The crate name is kept from upstream.
+# TrustTunnel endpoint
 
 ## Building the library
 
 ### Prerequisites
 
-- Rust 1.95 (pinned in `../rust-toolchain.toml`): use a preferred way from https://www.rust-lang.org/tools/install
+- Rust 1.85 or higher: use a preferred way from https://www.rust-lang.org/tools/install
 - libclang 9.0 or higher
 
 ### Building

@@ -4,6 +4,7 @@ extern crate log;
 extern crate macros;
 
 pub mod authentication;
+pub mod cattail;
 pub mod cert_verification;
 pub mod client_config;
 pub mod client_random_prefix;

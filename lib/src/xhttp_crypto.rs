@@ -95,7 +95,7 @@ struct Suite1Opener {
 }
 
 /// The length of the derived key, the HKDF of `ring` needs a type for it.
-struct KeyLen(usize);
+pub(crate) struct KeyLen(pub(crate) usize);
 
 impl hkdf::KeyType for KeyLen {
     fn len(&self) -> usize {
@@ -134,7 +134,7 @@ fn build_transcript(
 }
 
 /// The nonce of a record: the direction and the counter.
-fn make_nonce(direction: u8, counter: u64) -> [u8; NONCE_LEN] {
+pub(crate) fn make_nonce(direction: u8, counter: u64) -> [u8; NONCE_LEN] {
     let mut nonce = [0u8; NONCE_LEN];
     nonce[0] = direction;
     nonce[4..].copy_from_slice(&counter.to_be_bytes());

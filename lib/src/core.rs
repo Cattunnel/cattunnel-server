@@ -82,7 +82,7 @@ pub(crate) struct Context {
     /// Spawned tasks report errors via Context::report_fatal_io_error().
     fatal_error: watch::Sender<Option<FatalIoError>>,
     pub metrics: Arc<Metrics>,
-    next_client_id: Arc<AtomicU64>,
+    pub(crate) next_client_id: Arc<AtomicU64>,
     next_tunnel_id: Arc<AtomicU64>,
     pub connection_limiter: Option<Arc<ConnectionLimiter>>,
     /// The registry of the XHTTP sessions waiting for their pair
@@ -212,6 +212,12 @@ impl Core {
                 .map_err(|e| io::Error::new(e.kind(), format!("ICMP listener failure: {}", e)))
         };
 
+        let listen_cattail = async {
+            crate::cattail::listen(self.context.clone())
+                .await
+                .map_err(|e| io::Error::new(e.kind(), format!("CatTail listener failure: {}", e)))
+        };
+
         let listen_metrics = async {
             metrics::listen(self.context.clone(), log_utils::IdChain::empty())
                 .await
@@ -241,10 +247,11 @@ impl Core {
                 },
                 Err(_) => Err(io::Error::other("Fatal error channel is unexpectedly closed")),
             },
-            x = futures::future::try_join4(
+            x = futures::future::try_join5(
                 listen_tcp,
                 listen_udp,
                 listen_icmp,
+                listen_cattail,
                 listen_metrics,
             ) => x.map(|_| ()),
         }
@@ -315,7 +322,6 @@ impl Core {
         };
         info!("Listening to TCP {}", settings.listen_address);
 
-        let tls_listener = Arc::new(TlsListener::new());
         loop {
             let client_id = log_utils::IdChain::from(log_utils::IdItem::new(
                 log_utils::CLIENT_ID_FMT,
@@ -344,37 +350,45 @@ impl Core {
                 }
             };
 
-            tokio::spawn({
-                let context = self.context.clone();
-                let tls_listener = tls_listener.clone();
-                async move {
-                    log_id!(trace, client_id, "Starting TLS handshake");
-                    let handshake_timeout = context.settings.tls_handshake_timeout;
-                    match tokio::time::timeout(handshake_timeout, tls_listener.listen(stream))
+            tokio::spawn(Core::serve_stream(
+                self.context.clone(),
+                stream,
+                net_utils::unmap_ipv6(client_addr.ip()),
+                client_id,
+            ));
+        }
+    }
+
+    /// Serve a TLS connection: one accepted on the main TCP listener, or the
+    /// inner stream of a CatTail connection.
+    pub(crate) async fn serve_stream<IO>(
+        context: Arc<Context>,
+        stream: IO,
+        client_ip: std::net::IpAddr,
+        client_id: log_utils::IdChain<u64>,
+    ) where
+        IO: 'static + AsyncRead + AsyncWrite + Unpin + Send + PeerAddr,
+    {
+        log_id!(trace, client_id, "Starting TLS handshake");
+        let handshake_timeout = context.settings.tls_handshake_timeout;
+        match tokio::time::timeout(handshake_timeout, TlsListener::new().listen(stream))
+            .await
+            .unwrap_or_else(|_| Err(io::Error::from(ErrorKind::TimedOut)))
+        {
+            Ok(acceptor) => {
+                log_id!(
+                    trace,
+                    client_id,
+                    "TLS handshake complete, processing connection"
+                );
+                if let Err((client_id, message)) =
+                    Core::on_new_tls_connection(context.clone(), acceptor, client_ip, client_id)
                         .await
-                        .unwrap_or_else(|_| Err(io::Error::from(ErrorKind::TimedOut)))
-                    {
-                        Ok(acceptor) => {
-                            log_id!(
-                                trace,
-                                client_id,
-                                "TLS handshake complete, processing connection"
-                            );
-                            if let Err((client_id, message)) = Core::on_new_tls_connection(
-                                context.clone(),
-                                acceptor,
-                                net_utils::unmap_ipv6(client_addr.ip()),
-                                client_id,
-                            )
-                            .await
-                            {
-                                log_id!(debug, client_id, "{}", message);
-                            }
-                        }
-                        Err(e) => log_id!(trace, client_id, "TLS handshake failed: {}", e),
-                    }
+                {
+                    log_id!(debug, client_id, "{}", message);
                 }
-            });
+            }
+            Err(e) => log_id!(trace, client_id, "TLS handshake failed: {}", e),
         }
     }
 
@@ -431,12 +445,15 @@ impl Core {
         forwarder.listen().await
     }
 
-    async fn on_new_tls_connection(
+    async fn on_new_tls_connection<IO>(
         context: Arc<Context>,
-        acceptor: TlsAcceptor,
+        acceptor: TlsAcceptor<IO>,
         client_ip: std::net::IpAddr,
         client_id: log_utils::IdChain<u64>,
-    ) -> Result<(), (log_utils::IdChain<u64>, String)> {
+    ) -> Result<(), (log_utils::IdChain<u64>, String)>
+    where
+        IO: 'static + AsyncRead + AsyncWrite + Unpin + Send + PeerAddr,
+    {
         log_id!(
             trace,
             client_id,

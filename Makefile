@@ -6,7 +6,7 @@ LOG_LEVEL ?= trace
 CONFIG_FILE ?= vpn.toml
 HOSTS_CONFIG_FILE ?= hosts.toml
 DOCKER_IMAGE_NAME ?= trusttunnel-endpoint
-ENDPOINT_URL ?= https://github.com/Cattunnel/cattunnel-server.git
+ENDPOINT_URL ?= git@github.com:TrustTunnel/TrustTunnel.git
 ENDPOINT_VERSION ?= master
 ENDPOINT_HOSTNAME ?= vpn.endpoint
 DOCKER_DIR = docker
@@ -20,15 +20,10 @@ LISTEN_PORT ?= 443
 init:
 	git config core.hooksPath ./scripts/hooks
 
-.PHONY: endpoint/build-wizard
-## Build the setup wizard
-endpoint/build-wizard:
-	cargo build $(CARGO_BUILD_TYPE) --bin setup_wizard
-
 .PHONY: endpoint/setup
 ## Run the setup wizard to create all the required configuration files
-endpoint/setup: endpoint/build-wizard
-	cargo run $(CARGO_BUILD_TYPE) --bin setup_wizard -- \
+endpoint/setup:
+	cargo run $(CARGO_BUILD_TYPE) --bin trusttunnel_endpoint -- --setup-wizard \
 		--hostname "$(ENDPOINT_HOSTNAME)" \
 		--address "$(LISTEN_ADDRESS):$(LISTEN_PORT)" \
 		--lib-settings "$(CONFIG_FILE)" \

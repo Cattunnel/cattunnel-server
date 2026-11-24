@@ -1,13 +1,14 @@
-# Agent Guide for the CatTunnel server repository
+# Agent Guide for Trusttunnel Repository
 
-This document provides context and instructions for AI agents working on this codebase.
+This document provides context and instructions for AI agents working on the `Trusttunnel` codebase.
 
 ## Project Overview
 
-CatTunnel server is a fork of the TrustTunnel VPN endpoint originally developed
-by AdGuard. The endpoint supports HTTP/1.1, HTTP/2, and QUIC transports, can
-tunnel TCP, UDP, and ICMP traffic, and adds the NineLives transport
-(`docs/xhttp-protocol.md`). Binary and crate names are kept from upstream.
+TrustTunnel is an open-source VPN protocol endpoint originally developed by
+AdGuard. It provides fast, secure, and reliable VPN connections whose
+traffic is indistinguishable from regular HTTPS. The endpoint supports
+HTTP/1.1, HTTP/2, and QUIC transports, and can tunnel TCP, UDP, and ICMP
+traffic.
 
 ## Technical Context
 
@@ -32,10 +33,10 @@ vpn-libs-endpoint/
 │   │   └── authentication/    # Authentication module
 │   └── tests/                 # Integration tests (tunnel, auth, ping, speedtest, reverse proxy)
 │       └── common/            # Shared test helpers and fixtures
-├── endpoint/                  # Binary crate (`trusttunnel_endpoint`)
+├── endpoint/                  # Binary crate (`trusttunnel_endpoint`) with `--setup-wizard`
 │   └── src/main.rs            # CLI entrypoint for the VPN endpoint
-├── tools/                     # Binary crate (`setup_wizard`)
-│   └── setup_wizard/          # Interactive config generator with ACME support
+├── tools/                     # Library crate (`trusttunnel_endpoint_tools`)
+│   └── setup_wizard/          # Setup wizard library with ACME support
 ├── deeplink/                  # Library crate (`trusttunnel-deeplink`)
 │   └── src/                   # Deep-link URI encoding/decoding for client configs
 ├── macros/                    # Proc-macro crate (derive helpers)
@@ -44,9 +45,10 @@ vpn-libs-endpoint/
 ├── bench/                     # Benchmarking scripts and Docker setup
 ├── scripts/                   # Automation scripts
 │   ├── hooks/pre-commit       # Git pre-commit hook (lint + test)
-│   ├── install.sh             # Stub: prints how to build from source and exits 1
+│   ├── install.sh             # Release installation script
 │   └── trusttunnel.service.template  # systemd service template
-├── .github/workflows/         # GitHub Actions (test, md-lint, rust-lint, security-audit)
+├── bamboo-specs/              # Bamboo CI pipeline definitions
+├── .github/workflows/         # GitHub Actions (test, md-lint, security-audit, bench)
 ├── Dockerfile                 # Multi-stage Docker build
 ├── docker-entrypoint.sh       # Container entrypoint script
 ├── Makefile                   # Development task runner
@@ -124,7 +126,7 @@ their members.
   (`make test`, linters), and config/CLI impacts.
 
 - Always check that changes in `lib/` or `deeplink/` are synchronized with
-  `setup_wizard` behavior and flags.
+  `trusttunnel_endpoint --setup-wizard` behavior and flags.
 
 ## Changelog
 
@@ -156,10 +158,12 @@ protocol/deep-link format, library API) when relevant.
       forwarding (TCP, UDP, ICMP), settings parsing, authentication, and
       metrics. All shared types live here.
     - **`endpoint`** (`trusttunnel_endpoint`): binary crate with the CLI
-      entrypoint for running the VPN endpoint. Thin wrapper around `lib`.
-    - **`tools`** (`setup_wizard`): binary crate providing an interactive
+      entrypoint for running the VPN endpoint. It wraps `lib` for service mode
+      and links `trusttunnel_endpoint_tools` to expose `--setup-wizard`.
+    - **`tools`** (`trusttunnel_endpoint_tools`): library crate providing an interactive
       configuration wizard with ACME/Let's Encrypt support for certificate
-      provisioning.
+      provisioning. The endpoint binary links it and exposes it as
+      `trusttunnel_endpoint --setup-wizard`.
     - **`deeplink`** (`trusttunnel-deeplink`): library crate for encoding and
       decoding `tt://` deep-link URIs used in client configuration
       distribution.

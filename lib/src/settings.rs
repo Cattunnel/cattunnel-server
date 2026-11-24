@@ -41,6 +41,8 @@ pub enum ValidationError {
     NoCredentialsOnPublicAddress,
     /// Invalid auth failure status code
     InvalidAuthFailureStatusCode(u16),
+    /// Invalid [`Settings.cattail`]
+    CatTail(String),
 }
 
 impl Debug for ValidationError {
@@ -63,6 +65,7 @@ impl Debug for ValidationError {
                 "No credentials configured (credentials_file is missing) while listening on a public address. \
                 This is a security risk. Either configure credentials or use a loopback address (127.0.0.1 or ::1)"
             ),
+            Self::CatTail(x) => write!(f, "Invalid CatTail settings: {}", x),
             Self::InvalidAuthFailureStatusCode(code) => write!(
                 f,
                 "Invalid auth_failure_status_code: {}. Supported values: 407, 405, 404, 403",
@@ -82,6 +85,44 @@ impl Debug for Socks5Error {
         match self {
             Self::AddressNotSet => write!(f, "Server address is not set"),
         }
+    }
+}
+
+/// The CatTail listener, docs/cattail.md section 5.
+#[derive(Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
+pub struct CatTailSettings {
+    /// The TCP address of the CatTail listener, it must differ from
+    /// `listen_address`. A range of ports is mapped to it by the firewall.
+    pub listen_address: SocketAddr,
+    /// The endpoint key: base64 of 32 random bytes.
+    pub key: String,
+    /// The padding scheme of the server direction (docs/cattail.md section 4).
+    /// Not set: the default scheme.
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+impl CatTailSettings {
+    fn validate(&self, main: &SocketAddr) -> Result<(), ValidationError> {
+        if crate::cattail::decode_key(&self.key).is_none() {
+            return Err(ValidationError::CatTail(
+                "key must be base64 of 32 bytes".into(),
+            ));
+        }
+        if let Some(pattern) = &self.pattern {
+            crate::cattail::PaddingScheme::parse(pattern)
+                .map_err(|e| ValidationError::CatTail(e.to_string()))?;
+        }
+        let a = self.listen_address;
+        if a.port() == main.port()
+            && (a.ip() == main.ip() || a.ip().is_unspecified() || main.ip().is_unspecified())
+        {
+            return Err(ValidationError::CatTail(
+                "listen_address must differ from the main listen_address".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -210,6 +251,11 @@ pub struct Settings {
     /// missing file means an empty list.
     #[serde(default)]
     pub(crate) decoy_only_ips_file: Option<String>,
+
+    /// The CatTail listener (docs/cattail.md): the TLS of the client wrapped
+    /// into padded AEAD frames on its own TCP port. Not set: no listener.
+    #[serde(default)]
+    pub(crate) cattail: Option<CatTailSettings>,
 
     /// Whether speedtest is available on the main hosts.
     #[serde(default = "Settings::default_speedtest_enable")]
@@ -599,6 +645,10 @@ impl Settings {
             .map(ReverseProxySettings::validate)
             .transpose()?;
 
+        if let Some(cattail) = &self.cattail {
+            cattail.validate(&self.listen_address)?;
+        }
+
         if self.xhttp_supported_versions != [1] {
             return Err(ValidationError::UnsupportedXhttpVersion);
         }
@@ -815,6 +865,7 @@ impl Default for Settings {
             metrics: Default::default(),
             rules_engine: Some(rules::RulesEngine::default_allow()),
             decoy_only_ips_file: None,
+            cattail: None,
             speedtest_enable: false,
             ping_enable: Settings::default_ping_enable(),
             ping_path: None,
@@ -1091,6 +1142,7 @@ impl SettingsBuilder {
                 metrics: Default::default(),
                 rules_engine: Some(rules::RulesEngine::default_allow()),
                 decoy_only_ips_file: None,
+                cattail: None,
                 speedtest_enable: Settings::default_speedtest_enable(),
                 ping_enable: Settings::default_ping_enable(),
                 ping_path: Settings::default_ping_path(),
@@ -1164,6 +1216,12 @@ impl SettingsBuilder {
     /// Set the path of the decoy-only address list
     pub fn decoy_only_ips_file(mut self, path: impl Into<String>) -> Self {
         self.settings.decoy_only_ips_file = Some(path.into());
+        self
+    }
+
+    /// Set the CatTail listener
+    pub fn cattail(mut self, settings: CatTailSettings) -> Self {
+        self.settings.cattail = Some(settings);
         self
     }
 

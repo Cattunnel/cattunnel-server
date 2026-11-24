@@ -1,5 +1,5 @@
 name: 🐞 Bug report
-description: Report a bug in CatTunnel server
+description: Report a bug related to TrustTunnel endpoint
 title: "[Bug]: "
 labels: ["Bug"]
 body:
@@ -21,7 +21,7 @@ body:
           required: true
         - label: I searched existing issues and found no duplicates
           required: true
-        - label: I am using the latest revision of CatTunnel server
+        - label: I am using the latest version of the TrustTunnel console client
           required: true
 
   - type: textarea
@@ -108,4 +108,4 @@ body:
       value: |
         ---
 
-        Upvote [important issues](https://github.com/Cattunnel/cattunnel-server/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc+) with a :+1:
+        Upvote [important issues](https://github.com/TrustTunnel/TrustTunnel/issues?q=is%3Aissue+is%3Aopen+sort%3Areactions-%2B1-desc+) with a :+1:

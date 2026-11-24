@@ -1,10 +1,10 @@
-# Deep-link library (`trusttunnel-deeplink` crate)
+# TrustTunnel Deep-Link Library
 
-A standalone Rust library for encoding and decoding endpoint configuration deep links using the `tt` URI scheme. The crate name is kept from upstream.
+A standalone Rust library for encoding and decoding TrustTunnel configuration deep-links using the `tt` URI scheme.
 
 ## Features
 
-- **TLV encoding/decoding** - Implements the base tags `0x00`..`0x0F` of the [deep-link specification](../DEEP_LINK.md); the CatTunnel extension tags are skipped
+- **Complete TLV encoding/decoding** - Implements the full [TrustTunnel deep-link specification](../DEEP_LINK.md)
 - **Error handling** - Comprehensive error types with helpful messages
 - **Base64url encoding** - URL-safe, compact representation
 - **Certificate support** - PEM/DER conversion utilities
@@ -16,7 +16,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-trusttunnel-deeplink = { git = "https://github.com/Cattunnel/cattunnel-server" }
+trusttunnel-deeplink = { git = "https://github.com/TrustTunnel/TrustTunnel/" }
 ```
 
 ## Quick Start
@@ -69,12 +69,17 @@ The `DeepLinkConfig` struct supports the following fields:
 | `upstream_protocol` | `Protocol` | No | `Http2` | Upstream protocol (HTTP/2 or HTTP/3) |
 | `anti_dpi` | `bool` | No | `false` | Anti-DPI measures enabled |
 | `client_random_prefix` | `Option<String>` | No | None | TLS client random hex prefix |
+| `client_random_auth_key` | `Option<String>` | No | None | TLS client random auth key (hex) |
 | `name` | `Option<String>` | No | None | Human-readable server name |
 | `dns_upstreams` | `Vec<String>` | No | `[]` | DNS upstream addresses |
+| `tls_profile` | `Option<TlsProfile>` | No | None | TLS ClientHello fingerprint profile (`chrome` when absent) |
 | `subscription_url` | `Option<String>` | No | None | HTTPS subscription URL (v2) |
 
 \* Required unless `subscription_url` is present (format version 2); when it
 is, the static connection parameters are optional fallback.
+
+The reference script `scripts/config_to_deeplink.py` also accepts the
+deprecated client-config alias `default` for `boringssl`.
 
 ## Advanced Usage
 

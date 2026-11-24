@@ -20,8 +20,8 @@ This project is compatible with Linux and macOS systems.
 
 Run `make init` to prepare the development environment.
 
-- Rust 1.95 (pinned in `rust-toolchain.toml`)
-    - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.95 -y`
+- Rust version 1.85 or higher
+    - macOS/Linux: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain 1.85 -y`
 - CMake version 3.31.6 or higher
     - macOS: `brew install cmake`
     - Linux (Debian/Ubuntu): `apt install cmake`
@@ -142,8 +142,7 @@ Notes:
 For a more customized configuration experience, run the following commands:
 
 ```shell
-make endpoint/build-wizard  # If you skipped the previous section
-cargo run --bin setup_wizard  # Launch a dialogue session allowing you to tweak the settings
+cargo run --bin trusttunnel_endpoint -- --setup-wizard  # Launch a dialogue session allowing you to tweak the settings
 cargo run --bin trusttunnel_endpoint -- <lib-settings> <hosts-settings>  # File names depend on the previous step
 ```
 
@@ -153,9 +152,7 @@ file.
 ## Benchmarking
 
 The project includes a benchmark suite for measuring VPN throughput. See
-[bench/README.md](bench/README.md) for setup and usage instructions. The suite comes from
-upstream: by default it builds the upstream command-line client and compares it with
-WireGuard and a direct connection.
+[bench/README.md](bench/README.md) for setup and usage instructions.
 
 ---
 

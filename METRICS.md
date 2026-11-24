@@ -1,6 +1,6 @@
 # Metrics
 
-This document describes the metrics exposed by the CatTunnel server endpoint for monitoring and observability.
+This document describes the metrics exposed by vpn-libs-endpoint for monitoring and observability.
 
 ## Overview
 
@@ -105,16 +105,6 @@ Notes:
   number of active sessions; `ip` is a client IP observed for this user (one is
   chosen arbitrarily when the user connects from multiple addresses) and may be
   `null` (e.g. HTTP/3 connections where the peer address could not be resolved).
-
-### `/ja4`
-
-Added in CatTunnel server. Returns a JSON list of `[fingerprint, count]` pairs: the JA4
-fingerprints of the ClientHellos the endpoint received since it started, sorted by
-fingerprint. Use it to see which TLS profiles the clients really send.
-
-```json
-[["t13d1516h2_8daaf6152771_02713d6af862",42]]
-```
 
 ### `/health-check`
 
@@ -253,23 +243,6 @@ Only exposed when `per_client_metrics` is enabled.
 - Decremented when the association is closed
 - Includes sockets through direct forwarder and SOCKS5 UDP associations
 - Each unique source-destination pair counts as one socket
-
-### NineLives Reserved Bytes
-
-**Name:** `xhttp_reserved_bytes`
-**Type:** Gauge
-
-**Description:** Bytes currently reserved by NineLives (XHTTP) session buffers against
-`xhttp_memory_limit`. Added in CatTunnel server. TLS, HTTP/2 and kernel socket buffers are
-not counted.
-
-### NineLives Memory Rejections
-
-**Name:** `xhttp_memory_rejections_total`
-**Type:** Counter
-
-**Description:** NineLives sessions or buffer reservations refused because the memory budget
-was exhausted. A refused new session gets HTTP 503. Added in CatTunnel server.
 
 ## Metric Types
 

@@ -290,6 +290,13 @@ async fn post_with_credentials_returns_405() {
             future::Either::Right((response, _)) => response,
         };
         assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::CONTENT_LENGTH)
+                .unwrap(),
+            "0"
+        );
     };
 
     tokio::select! {
@@ -457,6 +464,63 @@ async fn get_h2_authenticated_returns_json() {
             future::Either::Right((response, _)) => response,
         };
         assert_eq!(response.status(), http::StatusCode::OK);
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn get_h2_without_credentials_returns_401_with_content_length() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts(cert_file.path.to_str().unwrap());
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let stream = common::establish_tls_connection(
+            common::MAIN_DOMAIN_NAME,
+            &endpoint_address,
+            Some(net_utils::HTTP2_ALPN.as_bytes()),
+        )
+        .await;
+        let url = format!(
+            "https://{}:{}/subscription",
+            common::MAIN_DOMAIN_NAME,
+            endpoint_address.port()
+        );
+        let (mut sender, conn) = hyper::client::conn::Builder::new()
+            .http2_only(true)
+            .handshake(stream)
+            .await
+            .unwrap();
+        let exchange = async {
+            let request = hyper::Request::builder()
+                .method("GET")
+                .uri(&url)
+                .version(http::Version::HTTP_2)
+                .body(hyper::Body::empty())
+                .unwrap();
+            sender.send_request(request).await.unwrap()
+        };
+        futures::pin_mut!(exchange);
+        let response = match future::select(conn, exchange).await {
+            future::Either::Left((_result, exchange)) => exchange.await,
+            future::Either::Right((response, _driver)) => response,
+        };
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::CONTENT_LENGTH)
+                .unwrap(),
+            "0"
+        );
     };
 
     tokio::select! {

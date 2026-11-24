@@ -1,4 +1,4 @@
-# Service template for the CatTunnel server endpoint (binary and unit names kept from upstream)
+# Service template for the TrustTunnel endpoint
 # Adjust paths at `ExecStart` and copy file to systemd system directory:
 #
 # sudo cp trusttunnel.service.template /etc/systemd/system/trusttunnel.service
@@ -6,7 +6,7 @@
 # sudo systemctl enable --now trusttunnel
 
 [Unit]
-Description=CatTunnel server endpoint
+Description=TrustTunnel endpoint
 After=network-online.target
 Wants=network-online.target
 

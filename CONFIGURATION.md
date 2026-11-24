@@ -1,6 +1,6 @@
-# CatTunnel Server Configuration
+# TrustTunnel Endpoint Configuration
 
-This document describes all available configuration settings and configuration files for the CatTunnel server endpoint (binary `trusttunnel_endpoint`; the name is kept from upstream).
+This document describes all available configuration settings and configuration files for the TrustTunnel VPN endpoint.
 
 ## Table of Contents
 
@@ -19,7 +19,6 @@ This document describes all available configuration settings and configuration f
     - [ICMP Settings](#icmp-settings)
     - [Metrics Settings](#metrics-settings)
     - [Subscription Settings](#subscription-settings)
-    - [XHTTP (NineLives) Settings](#xhttp-ninelives-settings)
 - [TLS Hosts Reference](#tls-hosts-reference)
 - [Rules Reference](#rules-reference)
 - [Runtime Configuration](#runtime-configuration)
@@ -28,7 +27,7 @@ This document describes all available configuration settings and configuration f
 
 ## Overview
 
-The endpoint uses TOML-formatted configuration files. The main
+The TrustTunnel endpoint uses TOML-formatted configuration files. The main
 configuration is split into:
 
 1. **Main settings file** - Core endpoint configuration (timeouts, protocols, etc.)
@@ -36,7 +35,7 @@ configuration is split into:
 3. **Credentials file** - Client authentication credentials
 4. **Rules file** - Connection filtering rules
 
-The `setup_wizard` tool can generate these files interactively.
+The `trusttunnel_endpoint --setup-wizard` tool can generate these files interactively.
 
 ---
 
@@ -47,6 +46,7 @@ The endpoint binary accepts the following command line arguments:
 | Argument | Short | Description | Default |
 | -------- | ------- | ----------- | ------- |
 | `--version` | `-v` | Print version and exit | - |
+| `--setup-wizard` | - | Run the setup wizard and exit. Must be the first argument | - |
 | `--loglvl` | `-l` | Logging level (`info`, `debug`, `trace`) | `info` |
 | `--logfile` | - | File path for storing logs (stdout if not specified) | stdout |
 | `--sentry_dsn` | - | Sentry DSN for error reporting | - |
@@ -61,6 +61,9 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
 | `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+
+The exported client configuration and deep-link do not set `tls_profile`.
+Clients use `chrome` unless the profile is set separately.
 
 ### Examples
 
@@ -459,34 +462,6 @@ credentials. Non-GET requests return `405`; missing or invalid credentials
 return `401`; an authenticated request while subscription is disabled returns
 `403`; otherwise the response is `200` with the per-user JSON body.
 
-### XHTTP (NineLives) Settings
-
-Added in CatTunnel server. Top-level keys of `vpn.toml` for the NineLives transport (XHTTP
-protocol 1). It is off by default. Overview and key generation:
-[docs/ninelives.md](docs/ninelives.md); wire format: [docs/xhttp-protocol.md](docs/xhttp-protocol.md).
-
-```toml
-xhttp_enable = true
-xhttp_path = "/api/v2/"
-xhttp_secret_key = "<base64 of a 32-byte Ed25519 seed>"
-xhttp_resume_timeout = 60
-```
-
-| Setting | Type | Default | Description |
-| --- | --- | --- | --- |
-| `xhttp_enable` | Boolean | `false` | Accept NineLives requests on the main hosts |
-| `xhttp_path` | String | `"/api/v2/"` | Path prefix of NineLives requests; the session id is appended. Must not overlap `ping_path` or `speedtest_path` |
-| `xhttp_secret_key` | String | - | Standard base64 of the 32-byte Ed25519 seed that signs the handshake |
-| `xhttp_resume_timeout` | Integer | `60` | Seconds a broken session is kept for resume; `0` disables resume |
-| `xhttp_memory_limit` | Integer | see below | Global budget for NineLives buffers, in bytes |
-| `xhttp_unacked_limit` | Integer | `1048576` | Maximum unacknowledged bytes per session |
-| `xhttp_supported_versions` | Array | `[1]` | Enabled protocol versions; only `[1]` is implemented |
-| `transport_mode` | String | `"xhttp"` | Listener mode; `xhttp-cdn` and `sudoku` are reserved and rejected |
-
-The default `xhttp_memory_limit` is one quarter of the smaller of physical memory and the
-cgroup limit, clamped to 64..512 MiB (64 MiB when memory cannot be detected). A new session
-reserves 256 KiB of it first; if that does not fit, the request receives HTTP 503.
-
 ---
 
 ## TLS Hosts Reference
@@ -498,7 +473,6 @@ Each TLS host entry requires:
 | `hostname` | String | **Required.** Hostname for TLS SNI matching (must be unique) |
 | `cert_chain_path` | String | **Required.** Path to PEM certificate chain file |
 | `private_key_path` | String | **Required.** Path to PEM private key file |
-| `allowed_sni` | Array | Optional. Extra SNI names accepted for a main host and served with its certificate, so the certificate must cover them. Default `[]` |
 
 ### Host Types
 
@@ -628,7 +602,7 @@ A systemd service template is provided. Default configuration assumes files in `
 
 ```bash
 # Install service
-sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/trusttunnel.service
+sudo cp /opt/trusttunnel/trusttunnel.service.template /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 

@@ -17,8 +17,8 @@ use tokio_rustls::{LazyConfigAcceptor, StartHandshake};
 
 pub(crate) struct TlsListener {}
 
-pub(crate) struct TlsAcceptor {
-    inner: StartHandshake<PrebufferedTcpStream>,
+pub(crate) struct TlsAcceptor<IO = TcpStream> {
+    inner: StartHandshake<PrebufferedTcpStream<IO>>,
     client_random: Option<Vec<u8>>,
 }
 
@@ -27,7 +27,12 @@ impl TlsListener {
         Self {}
     }
 
-    pub async fn listen(&self, stream: TcpStream) -> io::Result<TlsAcceptor> {
+    /// Read the ClientHello from a TCP connection or from the inner stream of
+    /// CatTail.
+    pub async fn listen<IO>(&self, stream: IO) -> io::Result<TlsAcceptor<IO>>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         let (stream, client_random) = Self::read_client_random_and_wrap_stream(stream).await?;
 
         // Now let rustls handle the stream normally
@@ -39,9 +44,12 @@ impl TlsListener {
             })
     }
 
-    async fn read_client_random_and_wrap_stream(
-        mut stream: TcpStream,
-    ) -> io::Result<(PrebufferedTcpStream, Option<Vec<u8>>)> {
+    async fn read_client_random_and_wrap_stream<IO>(
+        mut stream: IO,
+    ) -> io::Result<(PrebufferedTcpStream<IO>, Option<Vec<u8>>)>
+    where
+        IO: AsyncRead + Unpin,
+    {
         let mut client_random = None;
         let mut prebuffer: Vec<u8> = Vec::new();
         const MAX_PREBUFFER_LEN: usize = 16 * 1024;
@@ -143,13 +151,13 @@ enum ClientRandomExtraction {
     NotFound,
 }
 
-pub(crate) struct PrebufferedTcpStream {
+pub(crate) struct PrebufferedTcpStream<IO = TcpStream> {
     prebuffer: Vec<u8>,
     prebuffer_pos: usize,
-    stream: TcpStream,
+    stream: IO,
 }
 
-impl std::fmt::Debug for PrebufferedTcpStream {
+impl<IO> std::fmt::Debug for PrebufferedTcpStream<IO> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PrebufferedTcpStream")
             .field("prebuffer_len", &self.prebuffer.len())
@@ -158,8 +166,8 @@ impl std::fmt::Debug for PrebufferedTcpStream {
     }
 }
 
-impl PrebufferedTcpStream {
-    fn new(prebuffer: Vec<u8>, stream: TcpStream) -> Self {
+impl<IO> PrebufferedTcpStream<IO> {
+    fn new(prebuffer: Vec<u8>, stream: IO) -> Self {
         Self {
             prebuffer,
             prebuffer_pos: 0,
@@ -168,13 +176,13 @@ impl PrebufferedTcpStream {
     }
 }
 
-impl net_utils::PeerAddr for PrebufferedTcpStream {
+impl<IO: net_utils::PeerAddr> net_utils::PeerAddr for PrebufferedTcpStream<IO> {
     fn peer_addr(&self) -> io::Result<std::net::SocketAddr> {
         self.stream.peer_addr()
     }
 }
 
-impl AsyncRead for PrebufferedTcpStream {
+impl<IO: AsyncRead + Unpin> AsyncRead for PrebufferedTcpStream<IO> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -194,7 +202,7 @@ impl AsyncRead for PrebufferedTcpStream {
     }
 }
 
-impl AsyncWrite for PrebufferedTcpStream {
+impl<IO: AsyncWrite + Unpin> AsyncWrite for PrebufferedTcpStream<IO> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -212,7 +220,7 @@ impl AsyncWrite for PrebufferedTcpStream {
     }
 }
 
-impl TlsAcceptor {
+impl<IO: AsyncRead + AsyncWrite + Unpin> TlsAcceptor<IO> {
     pub fn sni(&self) -> Option<String> {
         self.inner.client_hello().server_name().map(String::from)
     }
@@ -235,7 +243,7 @@ impl TlsAcceptor {
         cert_chain: Vec<CertificateDer<'static>>,
         key: PrivateKeyDer<'static>,
         _log_id: &log_utils::IdChain<u64>,
-    ) -> io::Result<TlsStream<PrebufferedTcpStream>> {
+    ) -> io::Result<TlsStream<PrebufferedTcpStream<IO>>> {
         let tls_config = {
             let mut provider = aws_lc_rs::default_provider();
             provider.kx_groups = vec![

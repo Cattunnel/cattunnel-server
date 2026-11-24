@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
+const CONNECT_DATA_CHUNK: usize = 4096;
+
 pub(crate) struct Http2Codec<IO> {
     state: State<IO>,
     parent_id_chain: log_utils::IdChain<u64>,
@@ -46,11 +48,13 @@ struct RequestStream {
 struct Respond {
     tx: SendResponse<Bytes>,
     id: log_utils::IdChain<u64>,
+    is_connect: bool,
 }
 
 struct RespondStream {
     tx: SendStream<Bytes>,
     id: log_utils::IdChain<u64>,
+    is_connect: bool,
 }
 
 impl<IO> Http2Codec<IO>
@@ -101,6 +105,7 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin> HttpCodec for Http2Codec<IO> {
         match session.accept().await {
             Some(Ok((request, respond))) => {
                 let (request, rx) = request.into_parts();
+                let is_connect = request.method == http::Method::CONNECT;
                 let id = self.parent_id_chain.extended(log_utils::IdItem::new(
                     log_utils::CONNECTION_ID_FMT,
                     self.next_conn_id.next().unwrap(),
@@ -121,7 +126,11 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin> HttpCodec for Http2Codec<IO> {
                         client_address: self.client_address,
                         id: id.clone(),
                     },
-                    respond: Respond { tx: respond, id },
+                    respond: Respond {
+                        tx: respond,
+                        id,
+                        is_connect,
+                    },
                 })))
             }
             Some(Err(e)) if e.is_io() => {
@@ -292,7 +301,11 @@ impl http_codec::PendingRespond for Respond {
             .map_err(h2_to_io_error)?;
 
         log_id!(trace, self.id, "H2 response sent successfully");
-        Ok(Box::new(RespondStream { tx, id: self.id }))
+        Ok(Box::new(RespondStream {
+            tx,
+            id: self.id,
+            is_connect: self.is_connect,
+        }))
     }
 }
 
@@ -335,7 +348,14 @@ impl pipe::Sink for RespondStream {
     fn write(&mut self, mut data: Bytes) -> io::Result<Bytes> {
         let original_len = data.len();
         self.tx.reserve_capacity(data.len());
-        let to_send = self.tx.capacity();
+        let to_send = if self.is_connect {
+            self.tx.capacity().min(CONNECT_DATA_CHUNK)
+        } else {
+            self.tx.capacity()
+        };
+        if to_send == 0 {
+            return Ok(data);
+        }
         self.tx
             .send_data(data.split_to(to_send), false)
             .map_err(h2_to_io_error)?;
@@ -388,4 +408,82 @@ fn h2_to_io_error(e: h2::Error) -> io::Error {
 
     e.into_io()
         .unwrap_or_else(|| io::Error::other(format!("HTTP2 error: {:?}", reason)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipe::Sink;
+    use tokio::io::duplex;
+
+    async fn sent_data_frame_sizes(method: http::Method) -> Vec<usize> {
+        let (client_io, server_io) = duplex(128 * 1024);
+        let server = tokio::spawn(async move {
+            let mut conn = h2::server::handshake(server_io).await.unwrap();
+            let (request, mut respond) = conn.accept().await.unwrap().unwrap();
+            let id = log_utils::IdChain::empty();
+            let mut stream = RespondStream {
+                tx: respond
+                    .send_response(http::Response::new(()), false)
+                    .unwrap(),
+                id,
+                is_connect: request.method() == http::Method::CONNECT,
+            };
+            let writer = async {
+                stream
+                    .write_all(Bytes::from(vec![7; 32 * 1024]))
+                    .await
+                    .unwrap();
+                stream.eof().unwrap();
+            };
+            tokio::join!(writer, async {
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), conn.accept()).await;
+            });
+        });
+        let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+        let driver = tokio::spawn(async move { connection.await.unwrap() });
+        let uri = if method == http::Method::CONNECT {
+            "localhost:443"
+        } else {
+            "https://localhost:443/"
+        };
+        let (response, _) = sender
+            .send_request(
+                http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(())
+                    .unwrap(),
+                true,
+            )
+            .unwrap();
+        let mut body = response.await.unwrap().into_body();
+        let mut sizes = Vec::new();
+        while let Some(chunk) = body.data().await {
+            let chunk = chunk.unwrap();
+            sizes.push(chunk.len());
+            body.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+        drop(sender);
+        driver.abort();
+        server.await.unwrap();
+        sizes
+    }
+
+    #[tokio::test]
+    async fn connect_download_sends_browser_sized_data_frames() {
+        let sizes = sent_data_frame_sizes(http::Method::CONNECT).await;
+        assert_eq!(sizes.first(), Some(&4096), "DATA frame sizes: {sizes:?}");
+    }
+
+    #[tokio::test]
+    async fn non_connect_download_keeps_full_data_frames() {
+        let sizes = sent_data_frame_sizes(http::Method::GET).await;
+        assert_eq!(
+            sizes.first(),
+            Some(&(16 * 1024)),
+            "DATA frame sizes: {sizes:?}"
+        );
+    }
 }
